@@ -1,0 +1,303 @@
+// Copyright 2025 Brick Towers
+pragma language_version >= 0.22;
+
+// SECURE PATTERN — witness-derived identity (auth); ownPublicKey() retained
+// ONLY for safe token routing to the caller. Authorization gates (the
+// `authorizations` tree) key on a UserPublicKey derived inside the circuit
+// from a single private 32-byte witness secret (getUserSecret), so a prover
+// cannot forge another party's authorization. ownPublicKey() is still used as
+// the *recipient* of shielded sends — its only safe use, since lying there
+// merely misroutes the caller's own coins.
+
+import CompactStandardLibrary;
+
+import Crypto;
+
+import PassportIdentity;
+
+export { ShieldedCoinInfo };
+
+export { ZswapCoinPublicKey };
+
+export { MerkleTreePath };
+
+export { Either };
+
+export { ContractAddress };
+
+export { MerkleTreeDigest };
+
+export { SignedCredential };
+
+export { PassportData };
+
+// We are exporting these signing primitives instead of the pure sign circuit due to broken ecMulGenerator in CompactRuntime
+export { computeChallengeForCredential };
+
+export { generateDeterministicK };
+
+// export { sign };
+
+// Every browser/CLI instance holds a single 32-byte secret in private state.
+// The caller's AUTHORIZATION identity is derived from that secret in-circuit
+// via a domain-separated persistentHash, so it is cryptographically bound to
+// the prover and cannot be spoofed. ownPublicKey() is never used for auth.
+export struct UserSecretKey {
+  bytes: Bytes<32>;
+}
+
+export struct UserPublicKey {
+  bytes: Bytes<32>;
+}
+
+witness localSecretKey(): Bytes<32>;
+
+witness getUserSecret(): UserSecretKey;
+
+witness findIssuerPath(pk: Bytes<32>): MerkleTreePath<32, Bytes<32>>;
+
+witness findAuthorizationPath(pk: UserPublicKey): MerkleTreePath<32, UserPublicKey>;
+
+// Helper witness functions for workarounds
+witness reduceChallenge(r: Field): Field;
+
+export ledger counter: Counter;
+
+export ledger nonce: Bytes<32>;
+
+export ledger quizHash: Bytes<32>;
+
+export ledger issuerAuthorizations: HistoricMerkleTree<32, Bytes<32>>;
+
+export ledger authorizations: HistoricMerkleTree<32, UserPublicKey>;
+
+export sealed ledger tbtcCoinColor: Bytes<32>;
+
+export sealed ledger identityProviderPublicKey: JubjubPoint;
+
+export sealed ledger EIGHTEEN_YEARS_IN_SECONDS: Uint<64>;
+
+export sealed ledger ALLOWED_COUNTRY_CODE1: Field;
+
+export sealed ledger ALLOWED_COUNTRY_CODE2: Field;
+
+export ledger tHF: ShieldedCoinInfo;
+
+export ledger tBTC: ShieldedCoinInfo;
+
+export struct QuizResult {
+  q1: Uint<32>;
+  q2: Uint<32>;
+  q3: Uint<32>;
+  q4: Uint<32>;
+  q5: Uint<32>;
+  q6: Uint<32>;
+}
+
+constructor(_nonce: Bytes<32>,
+            adminIssuer: Bytes<32>,
+            _quizHash: Bytes<32>,
+            _identityProviderPublicKey: JubjubPoint,
+            tBTCaddress: ContractAddress
+            ) {
+  quizHash = disclose(_quizHash);
+  nonce = disclose(_nonce);
+  issuerAuthorizations.insert(disclose(adminIssuer));
+  identityProviderPublicKey = disclose(_identityProviderPublicKey);
+  ALLOWED_COUNTRY_CODE1 = 'UTO' as Field;
+  ALLOWED_COUNTRY_CODE2 = 'MID' as Field;
+  EIGHTEEN_YEARS_IN_SECONDS = 568036800; // 18 * 365 * 24 * 60 * 60x
+  tbtcCoinColor = tokenType(pad(32, "brick-towers:coin:tbtc"), disclose(tBTCaddress));
+}
+
+export circuit add(issuer: Bytes<32>): [] {
+  checkIfAuthorizedIssuer();
+  issuerAuthorizations.insert(disclose(issuer));
+}
+
+circuit checkIfAuthorizedIssuer(): [] {
+  const key = publicKey(localSecretKey());
+  const authPath = findIssuerPath(key);
+  const root = merkleTreePathRoot<32, Bytes<32>>(disclose(authPath));
+  assert(issuerAuthorizations.checkRoot(root), "not authorized");
+}
+
+circuit thfCoinColor(): Bytes<32> {
+  return tokenType(pad(32, "brick-towers:coin:thf"), disclose(kernel.self()));
+}
+
+export circuit mintTHF(amount: Uint<64>): [] {
+  checkIfAuthorizedIssuer();
+  const disclosedAmount = disclose(amount);
+  counter.increment(1);
+  const newNonce = evolveNonce(counter, nonce);
+  const destination = right<ZswapCoinPublicKey, ContractAddress>(kernel.self());
+  const coin = mintShieldedToken(
+                 pad(32, "brick-towers:coin:thf"),
+                 disclosedAmount,
+                 newNonce,
+                 destination
+                 );
+  receiveShielded(coin);
+  writeTHF(coin);
+  nonce = newNonce;
+}
+
+export circuit change(sendResult: ShieldedSendResult): ShieldedCoinInfo {
+  if (sendResult.change.is_some) {
+    return sendResult.change.value;
+  } else {
+    return default<ShieldedCoinInfo>;
+  }
+}
+
+circuit writeTBTC(coin: ShieldedCoinInfo): [] {
+  const contractDestination = right<ZswapCoinPublicKey, ContractAddress>(kernel.self());
+  if (tBTC != default<ShieldedCoinInfo>) {
+    const merged = sendImmediateShielded(tBTC, contractDestination, tBTC.value);
+    tBTC = coin;
+  } else {
+    tBTC = coin;
+  }
+}
+
+circuit writeTHF(coin: ShieldedCoinInfo): [] {
+  const contractDestination = right<ZswapCoinPublicKey, ContractAddress>(kernel.self());
+  if (tHF != default<ShieldedCoinInfo>) {
+    const merged = sendImmediateShielded(tHF, contractDestination, tHF.value);
+    tHF = coin;
+  } else {
+    tHF = coin;
+  }
+}
+
+export circuit provideTBTC(inputCoin: ShieldedCoinInfo): [] {
+  checkIfAuthorizedIssuer();
+  const coin = disclose(inputCoin);
+  receiveShielded(coin);
+  assert(coin.color == tbtcCoinColor, "The coin supplied for verification is not tBTC");
+  writeTBTC(coin);
+}
+
+export circuit buyTHF(inputCoin: ShieldedCoinInfo): [] {
+  // receive tBTC and send tHF
+  // Gate on the caller's witness-derived authorization identity. The send below
+  // still routes the tHF *to* ownPublicKey() — the documented safe use; worst
+  // case the caller misroutes their own coins.
+  isAuthorizedSend();
+  const coin = disclose(inputCoin);
+  assert(coin.color == tbtcCoinColor, "The coin supplied for verification is not tBTC");
+  assert(coin.value > 0, "The coin supplied has zero value");
+  receiveShielded(coin);
+  writeTBTC(coin);
+
+  const sendResult =
+          sendImmediateShielded(
+            tHF,
+            left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey()),
+            coin.value
+            ); // respect exchange rate
+  const receivedChange = change(sendResult);
+  if (receivedChange != default<ShieldedCoinInfo>) {
+    receiveShielded(receivedChange);
+    tHF = receivedChange;
+  } else {
+    tHF = default<ShieldedCoinInfo>;
+  }
+}
+
+export circuit sellTHF(inputCoin: ShieldedCoinInfo): [] {
+  // receive tHF and send tBTC
+  const coin = disclose(inputCoin);
+  assert(coin.color == thfCoinColor(), "The coin supplied for verification is not tHF");
+  assert(coin.value > 0, "The coin supplied has zero value");
+  receiveShielded(coin);
+  writeTHF(coin);
+
+  const sendResult =
+          sendImmediateShielded(
+            tBTC,
+            left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey()),
+            coin.value
+            ); // respect exchange rate
+  const receivedChange = change(sendResult);
+  if (receivedChange != default<ShieldedCoinInfo>) {
+    receiveShielded(receivedChange);
+    tBTC = receivedChange;
+  } else {
+    tBTC = default<ShieldedCoinInfo>;
+  }
+}
+
+circuit assertIdentity(identity: SignedCredential<PassportData>): [] {
+  const challenge: Field =
+          reduceChallenge(
+            computeChallengeForCredential(identity.signature.r, identity.pk, identity.credential)
+            );
+  assert(verify<PassportData>(identity, challenge),
+         "The supplied identity is not signed by the supplied public key"
+         );
+  assert(identity.pk == identityProviderPublicKey,
+         "The supplied identity is not issued by a trusted identity provider"
+         );
+  assert(disclose(identity.credential.nationality) == ALLOWED_COUNTRY_CODE1 ||
+         disclose(identity.credential.nationality) == ALLOWED_COUNTRY_CODE2,
+         "The holder of the identity is not from an allowed country"
+         );
+}
+
+circuit assertCoinValue(inputCoin: ShieldedCoinInfo): [] {
+  const coin = disclose(inputCoin);
+  assert(coin.color == tbtcCoinColor, "The coin supplied for verification is not tBTC");
+  assert(coin.value >= 100, "The coin supplied for verification has a value less than 100 tBTC");
+  receiveShielded(coin);
+  sendImmediateShielded(coin, left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey()), coin.value);
+}
+
+export circuit onboard(quiz: QuizResult,
+                       inputCoin: ShieldedCoinInfo,
+                       identity: SignedCredential<PassportData>
+                       ): [] {
+  assert(quizCommit(quiz) == quizHash, "Quiz has some incorrect answers");
+  assertIdentity(identity);
+  assertCoinValue(inputCoin);
+  // Register the caller's witness-derived authorization identity (bound to the
+  // prover), not ownPublicKey() (prover-supplied and forgeable).
+  authorizations.insert(disclose(deriveUserPublicKey(getUserSecret())));
+}
+
+// Authorization gate. Derives the caller's identity from the private witness
+// secret in-circuit and proves it is a member of the `authorizations` tree.
+// Internal (not exported): the identity is computed here, never taken as a
+// caller-supplied argument, so a prover cannot present someone else's identity.
+circuit isAuthorizedSend(): [] {
+  const caller = disclose(deriveUserPublicKey(getUserSecret()));
+  const authPath = disclose(findAuthorizationPath(caller));
+  // Bind the proof to the CALLER: the path the prover supplied must be the path
+  // for the caller's own derived identity. Without this, a prover could hand
+  // back any onboarded member's valid path (merkleTreePathRoot hashes the
+  // path's own leaf, not `caller`) and pass the membership check for an
+  // identity they do not control.
+  assert(authPath.leaf == caller, "authorization path does not match caller");
+  assert(authorizations.checkRoot(merkleTreePathRoot<32, UserPublicKey>(authPath)),
+         "not authorized"
+         );
+}
+
+export circuit publicKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "rwa:pk"), sk]);
+}
+
+// Authorization identity, derived in-circuit from the private witness secret.
+// Domain-separated so this secret yields a key distinct from any other use.
+// This is the value inserted into / checked against the `authorizations` tree;
+// it is bound to the prover and cannot be forged from a public coin key.
+export pure circuit deriveUserPublicKey(sk: UserSecretKey): UserPublicKey {
+  return UserPublicKey { bytes: persistentHash<Vector<2, Bytes<32>>>(
+                                  [pad(32, "rwa:user:pk:v1"), sk.bytes]
+                                  ) };
+}
+
+export pure circuit quizCommit(quizResult: QuizResult): Bytes<32> {
+  return persistentCommit<QuizResult>(quizResult, pad(32, "rwa:quiz"));
+}

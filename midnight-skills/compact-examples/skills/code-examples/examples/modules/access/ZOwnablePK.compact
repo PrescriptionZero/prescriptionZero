@@ -1,0 +1,355 @@
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Compact Contracts v0.0.1-alpha.1 (access/ZOwnablePK.compact)
+
+pragma language_version >= 0.22;
+
+// =============================================================================
+//  SECURE PATTERN — witness-derived identity
+// =============================================================================
+//  Caller identity is derived INSIDE the circuit from a single private 32-byte
+//  witness secret (`getUserSecret`) via domain-separated `persistentHash`
+//  (`_deriveOwnerPublicKey`). The owner commitment pins THAT derived key, so a
+//  caller can only act as the owner if they hold the secret whose derived key
+//  was committed. `ownPublicKey()` is intentionally NOT used in the identity
+//  computation: it returns the prover-supplied Zswap coin public key, which is
+//  not cryptographically bound to the transaction signer, so any caller can
+//  supply any value and bypass an authorization check built on it.
+//
+//  Unlinkability is preserved: the commitment combines the derived owner key
+//  with a secret nonce ALSO derived from the witness secret (domain-separated)
+//  and an incrementing `_counter`, so the on-chain commitment changes on every
+//  transfer and never reveals the underlying key. The instance salt namespaces
+//  commitments across deployments.
+// =============================================================================
+
+/**
+ * @module ZOwnablePK
+ * @description A shielded, witness-key-derived Ownable module.
+ *
+ * `ZOwnablePK` provides a privacy-preserving access control mechanism
+ * for contracts with a single administrative user. Unlike traditional
+ * `Ownable` implementations that store or expose the owner's public key
+ * on-chain, this module stores only a commitment to a hashed identifier
+ * derived from the owner's witness-derived public key and a secret nonce.
+ *
+ * @dev Identity model (security boundary):
+ * - The owner's identity is a `UserPublicKey` DERIVED in-circuit from a single
+ *   private 32-byte witness secret (`getUserSecret`) via a domain-separated
+ *   `persistentHash`. The secret never leaves the prover's machine and the
+ *   derived key is never stored raw on-chain.
+ * - The secret nonce used for unlinkability is also derived from the same
+ *   witness secret (under a distinct domain), so a single secret drives the
+ *   whole identity. This binds the commitment to a witness-derived key rather
+ *   than to `ownPublicKey()`.
+ *
+ * @dev Features:
+ * - Obfuscated owner identity: the derived owner key is never revealed on-chain.
+ * - Stateless verification: the contract never needs the full derived key.
+ * - Built-in support for transfer and renounce functionality.
+ * - Instance-specific salts to prevent cross-contract correlation.
+ * - Deterministic hashing with `persistentHash` to support zero-knowledge verification.
+ *
+ * @dev Commitment structure:
+ * ```
+ * pk    = SHA256("zownablepk:owner:pk:v1",    secret)   // derived owner key
+ * nonce = SHA256("zownablepk:owner:nonce:v1", secret)   // derived secret nonce
+ * id    = SHA256(pk, nonce)
+ * commitment = SHA256(id, instanceSalt, counter, "ZOwnablePK:shield:")
+ * ```
+ * The commitment changes on each transfer due to the incrementing `counter`,
+ * providing unlinkability across ownership changes.
+ *
+ * @dev Security Considerations:
+ * - The witness secret must be kept private. Loss of the secret prevents the
+ *   owner from proving ownership or transferring it.
+ * - Ownership validation is entirely circuit-based using the witness-derived key.
+ * - `ownPublicKey()` is never used for authorization — it is prover-supplied
+ *   and bypassable.
+ * - The `_instanceSalt` is immutable and used to differentiate deployments.
+ *
+ * @notice Best used for single-admin contracts with privacy requirements.
+ * It is not designed for multi-owner or role-based access control.
+ */
+module ZOwnablePK {
+  import CompactStandardLibrary;
+  import "../security/Initializable" prefix Initializable_;
+
+  /**
+   * @struct UserSecretKey
+   * @description The single private 32-byte secret each prover holds in private
+   * state. ALL identity in this module derives from this secret.
+   */
+  export struct UserSecretKey {
+    bytes: Bytes<32>;
+  }
+
+  /**
+   * @struct UserPublicKey
+   * @description The owner's public key, DERIVED in-circuit from a
+   * `UserSecretKey` via a domain-separated `persistentHash`. Never a raw,
+   * prover-supplied public key.
+   */
+  export struct UserPublicKey {
+    bytes: Bytes<32>;
+  }
+
+  /**
+   * @ledger _ownerCommitment
+   * @description Stores the current hashed commitment representing the owner.
+   * This commitment is derived from the identifier `id = SHA256(pk, nonce)`,
+   * the `instanceSalt`, the transfer `counter`, and a domain separator.
+   *
+   * A commitment of `default<Bytes<32>>` (i.e., zero) indicates the contract is unowned.
+   */
+  export ledger _ownerCommitment: Bytes<32>;
+  /**
+   * @ledger _counter
+   * @description Internal transfer counter used to prevent commitment reuse.
+   *
+   * Increments by 1 on every successful ownership transfer. Combined with `id` and
+   * `instanceSalt` to compute unique owner commitments over time.
+   */
+  export ledger _counter: Counter;
+  /**
+   * @sealed @ledger _instanceSalt
+   * @description A per-instance value provided at initialization used to namespace
+   * commitments for this contract instance.
+   *
+   * This salt prevents commitment collisions across contracts that might otherwise use
+   * the same owner identifiers or domain parameters. It is immutable after initialization.
+   */
+  export sealed ledger _instanceSalt: Bytes<32>;
+
+  /**
+   * @witness getUserSecret
+   * @description Supplies the prover's single private 32-byte secret. Both the
+   * owner's derived public key and the unlinkability nonce are computed from
+   * this one secret via domain-separated `persistentHash` INSIDE the circuit.
+   *
+   * The secret never leaves the prover's machine. Whoever's derived owner key
+   * was committed at initialization (or the most recent transfer) holds the
+   * owner role; everyone else fails the equality assertion inside the proof.
+   */
+  export witness getUserSecret(): UserSecretKey;
+
+  /**
+   * @description Derives the owner's public key from a witness secret via a
+   * domain-separated `persistentHash`. This is the identity source that
+   * replaces `ownPublicKey()` — it is bound to the secret the prover holds.
+   *
+   * @param {UserSecretKey} sk - The prover's private 32-byte secret.
+   * @returns {UserPublicKey} The derived owner public key.
+   */
+  export pure circuit _deriveOwnerPublicKey(sk: UserSecretKey): UserPublicKey {
+    return UserPublicKey { bytes: persistentHash<Vector<2, Bytes<32>>>(
+                                    [pad(32, "zownablepk:owner:pk:v1"), sk.bytes]
+                                    ) };
+  }
+
+  /**
+   * @description Derives the unlinkability nonce from the same witness secret
+   * under a DISTINCT domain. Keeping the nonce bound to the secret means a
+   * single secret drives the whole identity while still rotating the on-chain
+   * commitment with the transfer counter.
+   *
+   * @param {UserSecretKey} sk - The prover's private 32-byte secret.
+   * @returns {Bytes<32>} The derived secret nonce.
+   */
+  export pure circuit _deriveOwnerNonce(sk: UserSecretKey): Bytes<32> {
+    return persistentHash<Vector<2, Bytes<32>>>([pad(32, "zownablepk:owner:nonce:v1"), sk.bytes]);
+  }
+
+  /**
+   * @description Initializes the contract by setting the initial owner via `ownerId`
+   * and storing the `instanceSalt` that acts as a privacy additive for preventing
+   * duplicate commitments among other contracts implementing ZOwnablePK.
+   *
+   * @warning The `ownerId` must be calculated prior to contract deployment as
+   * `SHA256(pk, nonce)` where `pk = _deriveOwnerPublicKey(secret).bytes` and
+   * `nonce = _deriveOwnerNonce(secret)` for the deployer's witness secret.
+   * Using any other derivation will result in a permanent loss of contract access.
+   *
+   * Requirements:
+   *
+   * - Contract is not initialized.
+   * - `ownerId` is not zero.
+   *
+   * @param {Bytes<32>} ownerId - The owner's unique identifier `SHA256(pk, nonce)`.
+   * @param {Bytes<32>} instanceSalt - Contract salt to prevent duplicate commitments
+   * if users reuse their witness secret across deployments (not recommended).
+   * @returns {[]} Empty tuple.
+   */
+  export circuit initialize(ownerId: Bytes<32>, instanceSalt: Bytes<32>): [] {
+    Initializable_initialize();
+
+    assert(ownerId != default<Bytes<32>>, "ZOwnablePK: invalid id");
+    _instanceSalt = disclose(instanceSalt);
+    _transferOwnership(ownerId);
+  }
+
+  /**
+   * @description Returns the current commitment representing the contract owner.
+   * The full commitment is: `SHA256(SHA256(pk, nonce), instanceSalt, counter, domain)`.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @returns {Bytes<32>} The current owner's commitment.
+   */
+  export circuit owner(): Bytes<32> {
+    Initializable_assertInitialized();
+    return _ownerCommitment;
+  }
+
+  /**
+   * @description Transfers ownership to `newOwnerId`.
+   * `newOwnerId` must be precalculated by the new owner off chain as
+   * `SHA256(_deriveOwnerPublicKey(secret).bytes, _deriveOwnerNonce(secret))`
+   * and given to the current owner.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - Caller is the current owner.
+   * - `newOwnerId` is not an empty array.
+   *
+   * @param {Bytes<32>} newOwnerId - The new owner's unique identifier `SHA256(pk, nonce)`.
+   * @returns {[]} Empty tuple.
+   */
+  export circuit transferOwnership(newOwnerId: Bytes<32>): [] {
+    Initializable_assertInitialized();
+
+    assertOnlyOwner();
+    assert(newOwnerId != default<Bytes<32>>, "ZOwnablePK: invalid id");
+    _transferOwnership(newOwnerId);
+  }
+
+  /**
+   * @description Leaves the contract without an owner.
+   * It will not be possible to call `assertOnlyOwner` circuits anymore.
+   * Can only be called by the current owner.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - Caller is the current owner.
+   *
+   * @returns {[]} Empty tuple.
+   */
+  export circuit renounceOwnership(): [] {
+    Initializable_assertInitialized();
+
+    assertOnlyOwner();
+    _ownerCommitment.resetToDefault();
+  }
+
+  /**
+   * @description Throws if the caller's witness-derived id `SHA256(pk, nonce)`
+   * does not match the stored owner commitment.
+   * Use this to only allow the owner to call specific circuits.
+   *
+   * The caller identity is derived ENTIRELY from the witness secret: the owner
+   * public key and the secret nonce are both computed in-circuit from
+   * `getUserSecret()`. `ownPublicKey()` is never consulted.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - The caller's derived id, when fed through `_computeOwnerCommitment`,
+   *   equals the stored `_ownerCommitment`.
+   *
+   * @returns {[]} Empty tuple.
+   */
+  export circuit assertOnlyOwner(): [] {
+    Initializable_assertInitialized();
+
+    const secret = getUserSecret();
+    // Identity comes from the witness secret, NOT from ownPublicKey().
+    const pk = _deriveOwnerPublicKey(secret);
+    const nonce = _deriveOwnerNonce(secret);
+    const id = _computeOwnerId(pk, nonce);
+    assert(_ownerCommitment == _computeOwnerCommitment(id, _counter),
+           "ZOwnablePK: caller is not the owner"
+           );
+  }
+
+  /**
+   * @description Computes the owner commitment from the given `id` and `counter`.
+   *
+   * ## Owner ID (`id`)
+   * The `id` is computed as:
+   * `id = SHA256(pk, nonce)`
+   *
+   * - `pk`: The owner's witness-derived public key (`_deriveOwnerPublicKey`).
+   * - `nonce`: The owner's witness-derived secret nonce (`_deriveOwnerNonce`).
+   *
+   * ## Commitment Derivation
+   * `commitment = SHA256(id, instanceSalt, counter, domain)`
+   *
+   * - `id`: See above.
+   * - `instanceSalt`: A unique per-deployment salt, stored during initialization.
+   * This prevents commitment collisions across deployments.
+   * - `counter`: Incremented with each ownership transfer, ensuring uniqueness
+   * even with repeated `id` values. Cast to `Field` then `Bytes<32>` for hashing.
+   * - `domain`: Domain separator `"ZOwnablePK:shield:"` (padded to 32 bytes) to prevent
+   * hash collisions when extending the module or using similar commitment schemes.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @param {Bytes<32>} id - The unique identifier of the owner `SHA256(pk, nonce)`.
+   * @param {Uint<64>} counter - The current counter or round. This increments by `1`
+   * after every transfer to prevent duplicate commitments given the same `id`.
+   * @returns {Bytes<32>} The commitment derived from `id` and `counter`.
+   */
+  export circuit _computeOwnerCommitment(id: Bytes<32>, counter: Uint<64>,): Bytes<32> {
+    Initializable_assertInitialized();
+    return persistentHash<Vector<4, Bytes<32>>>(
+             [id, _instanceSalt, counter as Field as Bytes<32>, pad(32, "ZOwnablePK:shield:")]
+             );
+  }
+
+  /**
+   * @description Computes the unique identifier (`id`) of the owner from their
+   * derived public key and a secret nonce.
+   *
+   * ## ID Derivation
+   * `id = SHA256(pk, nonce)`
+   *
+   * - `pk`: The owner's witness-derived public key. Unlike the previous design,
+   * this is NOT a raw, prover-supplied coin public key — it is derived in-circuit
+   * from the witness secret via `_deriveOwnerPublicKey`.
+   * - `nonce`: The owner's witness-derived secret nonce (`_deriveOwnerNonce`).
+   *
+   * The result is a 32-byte commitment that uniquely identifies the owner.
+   * This value is later used in owner commitment hashing.
+   *
+   * @param {UserPublicKey} pk - The owner's derived public key.
+   * @param {Bytes<32>} nonce - The owner's derived secret nonce.
+   * @returns {Bytes<32>} The computed owner ID.
+   */
+  export pure circuit _computeOwnerId(pk: UserPublicKey, nonce: Bytes<32>): Bytes<32> {
+    return persistentHash<Vector<2, Bytes<32>>>([pk.bytes, nonce]);
+  }
+
+  /**
+   * @description Transfers ownership to owner id `newOwnerId` without
+   * enforcing permission checks on the caller.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @param {Bytes<32>} newOwnerId - The unique identifier of the new owner
+   * `SHA256(pk, nonce)`.
+   * @returns {[]} Empty tuple.
+   */
+  export circuit _transferOwnership(newOwnerId: Bytes<32>): [] {
+    Initializable_assertInitialized();
+
+    _counter.increment(1);
+    _ownerCommitment = disclose(_computeOwnerCommitment(newOwnerId, _counter));
+  }
+}

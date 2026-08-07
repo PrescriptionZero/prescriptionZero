@@ -1,0 +1,262 @@
+pragma language_version >= 0.22;
+
+// =============================================================================
+//  SECURE PATTERN — witness-derived identity
+// =============================================================================
+//  Caller identity is derived INSIDE the circuit from a private witness secret
+//  via domain-separated `persistentHash` (see `deriveUserPublicKey` /
+//  `deriveAdminPublicKey`). `ownPublicKey()` is intentionally NOT used for
+//  authorization: it returns a prover-supplied value with no binding to the
+//  transaction signer, so any check built on it is bypassable. Identity-bearing
+//  circuits here take the caller's DERIVED `UserPublicKey` as an explicit
+//  parameter; the witness lives in the top-level contract (`kitties.compact`),
+//  which computes that parameter and never lets a caller pass an arbitrary
+//  identity. The admin is pinned at deploy in the top-level contract.
+// =============================================================================
+
+module Nft {
+
+  /**
+  * @file NFT Contract Module Implementation in Compact Language
+  * @author Ricardo Rius
+  * @license GPL-3.0
+  *
+  * Copyright (C) 2025 Ricardo Rius
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+  * the Free Software Foundation, either version 3 of the License, or
+  * (at your option) any later version.
+  *
+  * This program is distributed in the hope that it will be useful,
+  * but WITHOUT ANY WARRANTY; without even the implied warranty of
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+  * GNU General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License
+  * along with this program. If not, see <https://www.gnu.org/licenses/>.
+  *
+  * DISCLAIMER: This software is provided "as is" without any warranty.
+  * Use at your own risk. The author assumes no responsibility for any
+  * damages or losses arising from the use of this software.
+  */
+
+  import CompactStandardLibrary;
+
+  // Identity types. Every identity is a 32-byte value DERIVED from a private
+  // witness secret via a domain-separated persistentHash — never a raw,
+  // prover-supplied public key.
+  export struct UserSecretKey {
+    bytes: Bytes<32>;
+  }
+  export struct UserPublicKey {
+    bytes: Bytes<32>;
+  }
+  export struct AdminPublicKey {
+    bytes: Bytes<32>;
+  }
+
+  // Per-user identity. Derived from the holder's secret; a caller can only act
+  // as the identity whose secret they hold. Used as the owner/approval key.
+  export pure circuit deriveUserPublicKey(sk: UserSecretKey): UserPublicKey {
+    return UserPublicKey { bytes: persistentHash<Vector<2, Bytes<32>>>(
+                                    [pad(32, "kitties:user:pk:v1"), sk.bytes]
+                                    ) };
+  }
+
+  // Admin identity. Domain-separated from the user derivation so the same
+  // secret yields a distinct admin key. The deployer's
+  // `deriveAdminPublicKey(secret)` is frozen into `contractAdmin` at deploy.
+  export pure circuit deriveAdminPublicKey(sk: UserSecretKey): AdminPublicKey {
+    return AdminPublicKey { bytes: persistentHash<Vector<2, Bytes<32>>>(
+                                     [pad(32, "kitties:admin:pk:v1"), sk.bytes]
+                                     ) };
+  }
+
+  // Mapping from token ID to owner public key
+  export ledger tokenOwner: Map<Uint<64>, UserPublicKey>;
+
+  // Mapping from token ID to approved public key (for single-token approval)
+  export ledger tokenApprovals: Map<Uint<64>, UserPublicKey>;
+
+  // Mapping from owner to number of owned tokens (using a Counter type for safe increment/decrement)
+  export ledger ownedTokensCount: Map<UserPublicKey, Counter>;
+
+  // Mapping from owner to operator approvals (owner -> operator -> bool)
+  // Using a domain-separated hash of owner+operator as key for flat structure
+  export ledger operatorApprovals: Map<Field, Boolean>;
+
+  // Returns the number of tokens owned by a given public key
+  export circuit balanceOf(owner: UserPublicKey): Uint<64> {
+    assert(owner != default<UserPublicKey>, "Owner cannot be empty.");
+    if (ownedTokensCount.member(disclose(owner))) {
+      return ownedTokensCount.lookup(disclose(owner));
+    } else {
+      return 0;
+    }
+  }
+
+  // Returns the owner of a given token ID
+  export circuit ownerOf(tokenId: Uint<64>): UserPublicKey {
+    assert(tokenId != default<Uint<64>>, "Token ID cannot be empty.");
+    assert(tokenExists(disclose(tokenId)), "Token does not exist.");
+    return tokenOwner.lookup(disclose(tokenId));
+  }
+
+  // Returns true if a token exists for the given token ID
+  export circuit tokenExists(tokenId: Uint<64>): Boolean {
+    return tokenOwner.member(disclose(tokenId));
+  }
+
+  // Approves another public key to transfer the specified token ID.
+  // `caller` is the DERIVED identity computed by the top-level contract from
+  // the witness secret — it is the proven identity of the transaction author.
+  export circuit approve(caller: UserPublicKey, to: UserPublicKey, tokenId: Uint<64>): [] {
+    assert(to != default<UserPublicKey>, "Approved address cannot be empty.");
+
+    const owner = ownerOf(tokenId);
+    assert(to != owner, "Cannot approve yourself.");
+
+    // The caller must be the owner or an approved operator
+    assert(caller == owner || isApprovedForAll(owner, caller), "Not authorized.");
+
+    tokenApprovals.insert(disclose(tokenId), disclose(to));
+  }
+
+  // Returns the approved public key for a given token ID
+  export circuit getApproved(tokenId: Uint<64>): UserPublicKey {
+    assert(tokenId != default<Uint<64>>, "Token ID cannot be empty.");
+    assert(tokenExists(disclose(tokenId)), "Token does not exist.");
+
+    return tokenApprovals.lookup(disclose(tokenId));
+  }
+
+  // Sets or unsets approval for an operator to manage all of the caller's tokens.
+  // `caller` is the DERIVED identity of the transaction author.
+  export circuit setApprovalForAll(
+                   caller: UserPublicKey,
+                   operator: UserPublicKey,
+                   approved: Boolean
+                   ): [] {
+    assert(operator != default<UserPublicKey>, "Operator cannot be empty.");
+    assert(operator != caller, "Cannot set yourself as operator.");
+
+    // Create a hash key from owner and operator
+    const hashKey = operatorKey(caller, operator);
+
+    // Set or unset approval for the operator
+    operatorApprovals.insert(disclose(hashKey), disclose(approved));
+  }
+
+  // Checks if an operator is approved to manage all tokens of a given owner
+  export circuit isApprovedForAll(owner: UserPublicKey, operator: UserPublicKey): Boolean {
+    // Create a hash key from owner and operator
+    const hashKey = operatorKey(owner, operator);
+
+    // Check if the approval exists
+    if (!operatorApprovals.member(disclose(hashKey))) {
+      return false;
+    }
+
+    // Return the approval status
+    return operatorApprovals.lookup(disclose(hashKey));
+  }
+
+  // Transfers ownership of a given token ID from one public key to another.
+  // `caller` is the DERIVED identity of the transaction author; `fromAccount`
+  // is the account the token leaves. Authorization is checked against `caller`.
+  export circuit transferFrom(
+                   caller: UserPublicKey,
+                   fromAccount: UserPublicKey,
+                   to: UserPublicKey,
+                   tokenId: Uint<64>
+                   ): [] {
+    assert(tokenId != default<Uint<64>>, "Token ID cannot be empty.");
+    assert(fromAccount == ownerOf(tokenId), "From is not the owner.");
+    assert(isApprovedOrOwner(caller, disclose(tokenId)), "Not authorized to transfer.");
+
+    // Clear approval for this token
+    clearApproval(disclose(fromAccount), disclose(tokenId));
+
+    // Remove token from the current owner
+    removeTokenFrom(disclose(fromAccount), disclose(tokenId));
+
+    // Add token to the new owner
+    addTokenTo(disclose(to), disclose(tokenId));
+  }
+
+  // Mints a new token with the specified token ID to the given public key.
+  // Authorization is enforced by the top-level admin wrapper, not here.
+  export circuit mint(to: UserPublicKey, tokenId: Uint<64>): [] {
+    addTokenTo(disclose(to), disclose(tokenId));
+  }
+
+  // Burns (destroys) a specific token. Authorization is enforced by the
+  // top-level wrapper, not here.
+  export circuit burn(owner: UserPublicKey, tokenId: Uint<64>): [] {
+    clearApproval(disclose(owner), disclose(tokenId));
+    removeTokenFrom(disclose(owner), disclose(tokenId));
+  }
+
+  // =====================
+  // Internal helper functions
+  // =====================
+
+  // Domain-separated key for the operatorApprovals map.
+  circuit operatorKey(owner: UserPublicKey, operator: UserPublicKey): Field {
+    return transientHash<Vector<3, Bytes<32>>>(
+             [pad(32, "kitties:operator:v1"), owner.bytes, operator.bytes]
+             );
+  }
+
+  // Returns true if the spender is the owner, approved, or an operator for the token
+  circuit isApprovedOrOwner(spender: UserPublicKey, tokenId: Uint<64>): Boolean {
+    const owner = ownerOf(tokenId);
+
+    // Check if spender is the owner
+    if (spender == owner) {
+      return true;
+    }
+
+    // Check if spender is specifically approved for this token
+    if (tokenApprovals.member(tokenId) && spender == tokenApprovals.lookup(tokenId)) {
+      return true;
+    }
+
+    // Check if spender is an approved operator for all tokens
+    return isApprovedForAll(owner, spender);
+  }
+
+  // Adds a token to a public key, updating ownership and balance
+  circuit addTokenTo(to: UserPublicKey, tokenId: Uint<64>): [] {
+    assert(!tokenExists(tokenId), "Token already exists.");
+    assert(to != default<UserPublicKey>, "Recipient cannot be empty.");
+
+    tokenOwner.insert(tokenId, to);
+    // Initialize the counter if it doesn't exist
+    if (!ownedTokensCount.member(to)) {
+      ownedTokensCount.insert(to, default<Counter>);
+    }
+    // Increment the owner's token count
+    ownedTokensCount.lookup(to).increment(1);
+  }
+
+  // Removes a token from a public key, updating ownership and balance
+  circuit removeTokenFrom(fromAccount: UserPublicKey, tokenId: Uint<64>): [] {
+    assert(fromAccount != default<UserPublicKey>, "Sender cannot be empty.");
+    assert(fromAccount == ownerOf(tokenId), "Public key is not the owner.");
+
+    // Decrement the owner's token count
+    ownedTokensCount.lookup(fromAccount).decrement(1);
+    // Remove the token from the owner
+    tokenOwner.remove(tokenId);
+  }
+
+  // Clears approval for a token, if any
+  circuit clearApproval(owner: UserPublicKey, tokenId: Uint<64>): [] {
+    assert(owner == ownerOf(tokenId), "Public key is not the owner.");
+    if (tokenApprovals.member(tokenId)) {
+      tokenApprovals.remove(tokenId);
+    }
+  }
+}

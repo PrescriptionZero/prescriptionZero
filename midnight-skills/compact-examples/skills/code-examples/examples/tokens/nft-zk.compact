@@ -1,0 +1,126 @@
+/**
+ * @file Example NFT-ZK Usage - Demonstrates how to use the NFT-ZK modules
+ * @author Ricardo Rius
+ * @license GPL-3.0
+ *
+ * Copyright (C) 2025 Ricardo Rius
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ *
+ * DISCLAIMER: This software is provided "as is" without any warranty.
+ * Use at your own risk. The author assumes no responsibility for any
+ * damages or losses arising from the use of this software.
+ */
+
+pragma language_version >= 0.23;
+
+// =============================================================================
+//  SECURE PATTERN — witness-derived identity
+// =============================================================================
+//  Each instance holds a single 32-byte identity secret in private state.
+//  Caller identity is derived INSIDE the circuit from that secret via
+//  domain-separated `persistentHash` (`deriveUserPublicKey` /
+//  `deriveAdminPublicKey`), so a caller can only act as the identity they hold
+//  the secret for. `ownPublicKey()` is intentionally NOT used for authorization
+//  — it is prover-supplied and bypassable. The admin is pinned at deploy: the
+//  deployer's derived admin key is frozen into `contractAdmin`. Only these safe
+//  wrappers (which compute the caller from the witness) are exported — never the
+//  module's identity-parameterized circuits, which would let a caller pass an
+//  arbitrary identity and defeat the protection.
+//
+//  PRIVACY is preserved from the original design: owner identity is stored
+//  on-chain as a `Field` hash (never a raw key), and balances are looked up via
+//  `generateHashKey(pk.bytes, localSecret/sharedSecret)`. The derived
+//  `UserPublicKey` replaces the prover-supplied `ownPublicKey()` as the identity
+//  fed into those hashes.
+// =============================================================================
+
+import CompactStandardLibrary;
+
+import "../modules/token/NftZk";
+
+// Re-export identity types and pure derivations so the TypeScript layer can
+// compute public keys off-chain (e.g. to look up hashed balances/owners).
+export { UserSecretKey, UserPublicKey, AdminPublicKey };
+
+export { deriveUserPublicKey, deriveAdminPublicKey };
+
+// Export only the read-only views and the off-chain hash helper from the NftZk
+// module. The module's identity-parameterized mutating circuits
+// (approve/setApprovalForAll/transfer/transferFrom/mint/burn) are deliberately
+// NOT re-exported — exposing them would let a caller pass any `caller` identity.
+// Instead, the safe wrappers below compute the caller from the witness secret.
+export { ownerOf, getApproved, isApprovedForAll, tokenExists, generateHashKey };
+
+// The identity witness: each prover supplies their own 32-byte secret from
+// private state. This is the SOLE source of caller identity for authorization.
+witness getUserSecret(): UserSecretKey;
+
+// The admin's derived public key, pinned at deploy time.
+export ledger contractAdmin: AdminPublicKey;
+
+// Pin the admin role to the deployer's derived admin key.
+constructor() {
+  contractAdmin = disclose(deriveAdminPublicKey(getUserSecret()));
+}
+
+// Returns the number of tokens owned by `owner`. The caller is derived from the
+// witness secret; querying yourself uses the local secret, otherwise the shared
+// secret (preserving the privacy design).
+export circuit balanceOf(owner: UserPublicKey): Uint<64> {
+  const caller = disclose(deriveUserPublicKey(getUserSecret()));
+  return balanceOf(caller, owner);
+}
+
+// Transfer one of YOUR tokens to `to`. The caller is derived from the witness
+// secret and used as the proven identity.
+export circuit transfer(to: UserPublicKey, tokenId: Uint<64>): [] {
+  const caller = disclose(deriveUserPublicKey(getUserSecret()));
+  transfer(caller, to, tokenId);
+}
+
+// Transfer a token out of `fromHashKey` to `to`. The caller is derived from the
+// witness secret; the module asserts the caller is the owner or authorized.
+export circuit transferFromAuthorized(fromHashKey: Field, to: UserPublicKey, tokenId: Uint<64>): [] {
+  const caller = disclose(deriveUserPublicKey(getUserSecret()));
+  transferFrom(caller, fromHashKey, to, tokenId);
+}
+
+// Approve `to` to transfer `tokenId`. Caller derived from the witness secret.
+export circuit approve(to: UserPublicKey, tokenId: Uint<64>): [] {
+  const caller = disclose(deriveUserPublicKey(getUserSecret()));
+  approve(caller, to, tokenId);
+}
+
+// Set or unset `operator` as an operator for all of the caller's tokens.
+// Caller derived from the witness secret.
+export circuit setApprovalForAll(operator: UserPublicKey, approved: Boolean): [] {
+  const caller = disclose(deriveUserPublicKey(getUserSecret()));
+  setApprovalForAll(caller, operator, approved);
+}
+
+// Only the pinned admin can mint. The caller must prove they hold the admin
+// secret whose derived admin key equals `contractAdmin`.
+export circuit mintAdmin(to: UserPublicKey, tokenId: Uint<64>): [] {
+  assert(contractAdmin == deriveAdminPublicKey(getUserSecret()), "Not authorized to mint.");
+  const caller = disclose(deriveUserPublicKey(getUserSecret()));
+  mint(caller, to, tokenId);
+}
+
+// Only the pinned admin can burn.
+export circuit burnAdmin(tokenId: Uint<64>): [] {
+  assert(contractAdmin == deriveAdminPublicKey(getUserSecret()), "Not authorized to burn.");
+  const tokenOwnerHashKey = ownerOf(tokenId);
+  burn(tokenOwnerHashKey, tokenId);
+}

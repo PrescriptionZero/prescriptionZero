@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: MIT
+//
+// SECURE PATTERN — witness-derived identity.
+// Test harness exposing the reworked FungibleToken module. Accounts are keyed by
+// a DERIVED UserPublicKey; identity-sensitive circuits take the caller's derived
+// key (computed here from `getUserSecret()`), never `ownPublicKey()`.
+
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+import "../../FungibleToken" prefix FungibleToken_;
+
+import "../../../utils/Identity" prefix Identity_;
+
+export { Identity_UserSecretKey, Identity_UserPublicKey };
+
+export { Identity_deriveUserPublicKey };
+
+witness getUserSecret(): Identity_UserSecretKey;
+
+/**
+ * @description `init` is a param for testing.
+ * If `init` is true, initialize the contract; otherwise leave it uninitialized
+ * so we can test guards on the uninitialized state.
+ */
+constructor(_name: Opaque<"string">, _symbol: Opaque<"string">, _decimals: Uint<8>, init: Boolean) {
+  if (disclose(init)) {
+    FungibleToken_initialize(_name, _symbol, _decimals);
+  }
+}
+
+export circuit name(): Opaque<"string"> {
+  return FungibleToken_name();
+}
+
+export circuit symbol(): Opaque<"string"> {
+  return FungibleToken_symbol();
+}
+
+export circuit decimals(): Uint<8> {
+  return FungibleToken_decimals();
+}
+
+export circuit totalSupply(): Uint<128> {
+  return FungibleToken_totalSupply();
+}
+
+export circuit balanceOf(account: Identity_UserPublicKey): Uint<128> {
+  return FungibleToken_balanceOf(account);
+}
+
+export circuit allowance(owner: Identity_UserPublicKey, spender: Identity_UserPublicKey): Uint<128> {
+  return FungibleToken_allowance(owner, spender);
+}
+
+// Transfer YOUR tokens to `to`. Caller derived from the witness secret.
+export circuit transfer(to: Identity_UserPublicKey, value: Uint<128>): Boolean {
+  const caller = disclose(Identity_deriveUserPublicKey(getUserSecret()));
+  return FungibleToken_transfer(caller, to, value);
+}
+
+// Spend `fromAccount`'s tokens via allowance. Caller (spender) derived from secret.
+export circuit transferFrom(
+                 fromAccount: Identity_UserPublicKey,
+                 to: Identity_UserPublicKey,
+                 value: Uint<128>
+                 ): Boolean {
+  const caller = disclose(Identity_deriveUserPublicKey(getUserSecret()));
+  return FungibleToken_transferFrom(caller, fromAccount, to, value);
+}
+
+// Approve `spender` over YOUR tokens. Caller (owner) derived from the witness secret.
+export circuit approve(spender: Identity_UserPublicKey, value: Uint<128>): Boolean {
+  const caller = disclose(Identity_deriveUserPublicKey(getUserSecret()));
+  return FungibleToken_approve(caller, spender, value);
+}
+
+// Internal circuits (no caller gate) — exposed for tests.
+export circuit _approve(
+                 owner: Identity_UserPublicKey,
+                 spender: Identity_UserPublicKey,
+                 value: Uint<128>
+                 ): [] {
+  FungibleToken__approve(owner, spender, value);
+}
+
+export circuit _transfer(
+                 fromAccount: Identity_UserPublicKey,
+                 to: Identity_UserPublicKey,
+                 value: Uint<128>
+                 ): [] {
+  FungibleToken__transfer(fromAccount, to, value);
+}
+
+export circuit _mint(account: Identity_UserPublicKey, value: Uint<128>): [] {
+  FungibleToken__mint(account, value);
+}
+
+export circuit _burn(account: Identity_UserPublicKey, value: Uint<128>): [] {
+  FungibleToken__burn(account, value);
+}
+
+export circuit _spendAllowance(
+                 owner: Identity_UserPublicKey,
+                 spender: Identity_UserPublicKey,
+                 value: Uint<128>
+                 ): [] {
+  FungibleToken__spendAllowance(owner, spender, value);
+}

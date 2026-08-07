@@ -1,0 +1,159 @@
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Compact Contracts v0.0.1-alpha.1 (access/Ownable.compact)
+
+pragma language_version >= 0.23;
+
+// =============================================================================
+//  SECURE PATTERN — witness-derived identity
+// =============================================================================
+//  The owner is an `AdminPublicKey` DERIVED inside the ZK circuit from a private
+//  witness secret (see the `Identity` module) and pinned at deploy by the
+//  top-level contract. `assertOnlyOwner` takes the caller's already-derived
+//  `AdminPublicKey` and asserts it equals `_owner` — it NEVER calls
+//  `ownPublicKey()`, which is prover-supplied and bypassable for authorization.
+//  Only the secret holder whose `deriveAdminPublicKey(secret)` was pinned at
+//  deploy can satisfy the check; everyone else fails the equality assertion
+//  inside the proof. The top-level contract computes the caller from the witness
+//  and is the only thing that may call these circuits.
+// =============================================================================
+
+/**
+ * @module Ownable
+ * @description An unshielded Ownable library.
+ * This module provides a basic access control mechanism, where there is an owner
+ * that can be granted exclusive access to specific circuits.
+ * This approach is perfectly reasonable for contracts that have a single administrative user.
+ *
+ * The initial owner must be set by using the `initialize` circuit during construction.
+ * This can later be changed with `transferOwnership`.
+ *
+ * @notice The owner is identified by a witness-derived `AdminPublicKey` rather
+ * than an `Either<ZswapCoinPublicKey, ContractAddress>`. Because an
+ * `AdminPublicKey` is a derived 32-byte value (not a routable Zswap/contract
+ * address), the contract-vs-user `_unsafe*` machinery of the address-based
+ * design does not apply here and has been removed.
+ */
+module Ownable {
+  import CompactStandardLibrary;
+  import "../security/Initializable" prefix Initializable_;
+  import "../utils/Identity" prefix Identity_;
+
+  export ledger _owner: Identity_AdminPublicKey;
+
+  /**
+   * @description Initializes the contract by setting the `initialOwner`.
+   * This must be called in the contract's constructor with the deployer's
+   * DERIVED admin key.
+   *
+   * Requirements:
+   *
+   * - Contract is not already initialized.
+   * - `initialOwner` is not the zero key.
+   *
+   * @param {AdminPublicKey} initialOwner - The derived admin key of the initial owner.
+   * @returns {[]} Empty tuple.
+   */
+  export circuit initialize(initialOwner: Identity_AdminPublicKey): [] {
+    Initializable_initialize();
+    assert(initialOwner != default<Identity_AdminPublicKey>, "Ownable: invalid initial owner");
+    _transferOwnership(initialOwner);
+  }
+
+  /**
+   * @description Returns the current contract owner.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @returns {AdminPublicKey} - The contract owner's derived admin key.
+   */
+  export circuit owner(): Identity_AdminPublicKey {
+    Initializable_assertInitialized();
+    return _owner;
+  }
+
+  /**
+   * @description Transfers ownership of the contract to `newOwner`.
+   *
+   * @dev `caller` is the DERIVED admin key of the transaction author. It must
+   * equal the current owner.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - The caller is the current contract owner.
+   * - `newOwner` is not the zero key.
+   *
+   * @param {AdminPublicKey} caller - The derived admin key of the transaction author.
+   * @param {AdminPublicKey} newOwner - The new owner's derived admin key.
+   * @returns {[]} Empty tuple.
+   */
+  export circuit transferOwnership(
+                   caller: Identity_AdminPublicKey,
+                   newOwner: Identity_AdminPublicKey
+                   ): [] {
+    Initializable_assertInitialized();
+    assertOnlyOwner(caller);
+    assert(newOwner != default<Identity_AdminPublicKey>, "Ownable: invalid new owner");
+    _transferOwnership(newOwner);
+  }
+
+  /**
+   * @description Leaves the contract without an owner.
+   * It will not be possible to call `assertOnlyOwner` circuits anymore.
+   * Can only be called by the current owner.
+   *
+   * @dev `caller` is the DERIVED admin key of the transaction author.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - The caller is the current contract owner.
+   *
+   * @param {AdminPublicKey} caller - The derived admin key of the transaction author.
+   * @returns {[]} Empty tuple.
+   */
+  export circuit renounceOwnership(caller: Identity_AdminPublicKey): [] {
+    Initializable_assertInitialized();
+    assertOnlyOwner(caller);
+    _transferOwnership(default<Identity_AdminPublicKey>);
+  }
+
+  /**
+   * @description Throws if `caller` is not the current owner.
+   * Use this to restrict access of specific circuits to the owner.
+   *
+   * @dev `caller` is the DERIVED admin key of the transaction author, computed
+   * by the top-level contract from the witness secret. Authorization holds
+   * because only the secret holder can produce the owner's `AdminPublicKey`.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - `caller` equals the current contract owner.
+   *
+   * @param {AdminPublicKey} caller - The derived admin key of the transaction author.
+   * @returns {[]} Empty tuple.
+   */
+  export circuit assertOnlyOwner(caller: Identity_AdminPublicKey): [] {
+    Initializable_assertInitialized();
+    assert(caller == _owner, "Ownable: caller is not the owner");
+  }
+
+  /**
+   * @description Transfers ownership of the contract to `newOwner` without
+   * enforcing permission checks on the caller. Internal circuit.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @param {AdminPublicKey} newOwner - The new owner's derived admin key.
+   * @returns {[]} Empty tuple.
+   */
+  export circuit _transferOwnership(newOwner: Identity_AdminPublicKey): [] {
+    Initializable_assertInitialized();
+    _owner = disclose(newOwner);
+  }
+}

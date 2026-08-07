@@ -1,0 +1,456 @@
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Compact Contracts v0.0.1-alpha.1 (token/FungibleToken.compact)
+
+pragma language_version >= 0.23;
+
+// =============================================================================
+//  SECURE PATTERN — witness-derived identity
+// =============================================================================
+//  Accounts are keyed by a `UserPublicKey` that the top-level composing contract
+//  DERIVES inside the ZK circuit from a private witness secret (see the
+//  `Identity` module). Identity-sensitive circuits (`transfer`, `approve`,
+//  `transferFrom`, `_spendAllowance`) take the caller's already-derived
+//  `UserPublicKey` as an explicit `caller` parameter and use it as the
+//  owner/spender — they NEVER call `ownPublicKey()`, which is prover-supplied
+//  and bypassable for authorization. The composing contract computes `caller`
+//  from the witness and is the only thing that may call these circuits; it must
+//  not re-export them with a caller-supplied identity.
+// =============================================================================
+
+/**
+ * @module FungibleToken
+ * @description An unshielded FungibleToken library.
+ *
+ * @notice One notable difference regarding this implementation and the EIP20 spec
+ * consists of the token size. Uint<128> is used as the token size because Uint<256>
+ * cannot be supported.
+ * This is due to encoding limits on the midnight circuit backend:
+ * https://github.com/midnightntwrk/compactc/issues/929
+ *
+ * @notice Accounts are identified by a witness-derived `UserPublicKey` rather
+ * than an `Either<ZswapCoinPublicKey, ContractAddress>`. Because a `UserPublicKey`
+ * is a derived 32-byte value (not a routable Zswap/contract address), the
+ * contract-vs-user `_unsafe*` machinery of the address-based design does not
+ * apply here and has been removed; the surviving guards reject the zero key.
+ *
+ * Due to the vast incompatibilities with the EIP20 spec, it is our
+ * opinion that this implementation should not be called ERC20 at this time
+ * as this would be both very confusing and misleading. This may change as more
+ * features become available. The list of missing features is as follows:
+ *
+ * - Full uint256 support.
+ * - Events.
+ * - Contract-to-contract calls.
+ */
+module FungibleToken {
+  import CompactStandardLibrary;
+  import "../security/Initializable" prefix Initializable_;
+  import "../utils/Identity" prefix Identity_;
+
+  /**
+   * @description Mapping from account public keys to their token balances.
+   * @type {Map<UserPublicKey, Uint<128>>} _balances
+   */
+  export ledger _balances: Map<Identity_UserPublicKey, Uint<128>>;
+  /**
+   * @description Mapping from owner accounts to spender accounts and their allowances.
+   * @type {Map<UserPublicKey, Map<UserPublicKey, Uint<128>>>} _allowances
+   */
+  export ledger _allowances: Map<Identity_UserPublicKey, Map<Identity_UserPublicKey, Uint<128>>>;
+
+  export ledger _totalSupply: Uint<128>;
+
+  export sealed ledger _name: Opaque<"string">;
+  export sealed ledger _symbol: Opaque<"string">;
+  export sealed ledger _decimals: Uint<8>;
+
+  /**
+   * @description Initializes the contract by setting the name, symbol, and decimals.
+   * @dev This MUST be called in the implementing contract's constructor. Failure to do so
+   * can lead to an irreparable contract.
+   *
+   * @param {Opaque<"string">} name_ - The name of the token.
+   * @param {Opaque<"string">} symbol_ - The symbol of the token.
+   * @param {Uint<8>} decimals_ - The number of decimals used to get the user representation.
+   * @return {[]} - Empty tuple.
+   */
+  export circuit initialize(
+                   name_: Opaque<"string">,
+                   symbol_: Opaque<"string">,
+                   decimals_: Uint<8>
+                   ): [] {
+    Initializable_initialize();
+    _name = disclose(name_);
+    _symbol = disclose(symbol_);
+    _decimals = disclose(decimals_);
+  }
+
+  /**
+   * @description Returns the token name.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @return {Opaque<"string">} - The token name.
+   */
+  export circuit name(): Opaque<"string"> {
+    Initializable_assertInitialized();
+    return _name;
+  }
+
+  /**
+   * @description Returns the symbol of the token.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @return {Opaque<"string">} - The token symbol.
+   */
+  export circuit symbol(): Opaque<"string"> {
+    Initializable_assertInitialized();
+    return _symbol;
+  }
+
+  /**
+   * @description Returns the number of decimals used to get its user representation.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @return {Uint<8>} - The number of decimals.
+   */
+  export circuit decimals(): Uint<8> {
+    Initializable_assertInitialized();
+    return _decimals;
+  }
+
+  /**
+   * @description Returns the value of tokens in existence.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @return {Uint<128>} - The total supply of tokens.
+   */
+  export circuit totalSupply(): Uint<128> {
+    Initializable_assertInitialized();
+    return _totalSupply;
+  }
+
+  /**
+   * @description Returns the value of tokens owned by `account`.
+   *
+   * @dev Manually checks if `account` is a key in the map and returns 0 if it is not.
+   * Takes a derived `UserPublicKey` only — no secret — so it is safe to expose as a view.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @param {UserPublicKey} account - The derived public key to query.
+   * @return {Uint<128>} - The account's token balance.
+   */
+  export circuit balanceOf(account: Identity_UserPublicKey): Uint<128> {
+    Initializable_assertInitialized();
+    if (!_balances.member(disclose(account))) {
+      return 0;
+    }
+
+    return _balances.lookup(disclose(account));
+  }
+
+  /**
+   * @description Moves a `value` amount of tokens from `caller` to `to`.
+   *
+   * @dev `caller` is the DERIVED identity of the transaction author, computed by
+   * the top-level contract from the witness secret. It is used as the `from`
+   * account; authorization is implicit because only the secret holder can
+   * produce this `caller`.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - `to` is not the zero key.
+   * - `caller` has a balance of at least `value`.
+   *
+   * @param {UserPublicKey} caller - The derived identity of the transaction author.
+   * @param {UserPublicKey} to - The recipient of the transfer.
+   * @param {Uint<128>} value - The amount to transfer.
+   * @return {Boolean} - As per the IERC20 spec, this MUST return true.
+   */
+  export circuit transfer(
+                   caller: Identity_UserPublicKey,
+                   to: Identity_UserPublicKey,
+                   value: Uint<128>
+                   ): Boolean {
+    Initializable_assertInitialized();
+    _transfer(caller, to, value);
+    return true;
+  }
+
+  /**
+   * @description Returns the remaining number of tokens that `spender` will be allowed to spend on behalf of `owner`
+   * through `transferFrom`. This value changes when `approve` or `transferFrom` are called.
+   *
+   * @dev Manually checks if `owner` and `spender` are keys in the map and returns 0 if they are not.
+   * Takes derived keys only — no secret — so it is safe to expose as a view.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @param {UserPublicKey} owner - The derived public key of the approver.
+   * @param {UserPublicKey} spender - The derived public key of the spender.
+   * @return {Uint<128>} - The `spender`'s allowance over `owner`'s tokens.
+   */
+  export circuit allowance(
+                   owner: Identity_UserPublicKey,
+                   spender: Identity_UserPublicKey
+                   ): Uint<128> {
+    Initializable_assertInitialized();
+    if (!_allowances.member(disclose(owner)) || !_allowances.lookup(owner).member(disclose(spender))) {
+      return 0;
+    }
+
+    return _allowances.lookup(owner).lookup(disclose(spender));
+  }
+
+  /**
+   * @description Sets a `value` amount of tokens as allowance of `spender` over `caller`'s tokens.
+   *
+   * @dev `caller` is the DERIVED identity of the transaction author. It is used
+   * as the `owner` of the allowance.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - `spender` is not the zero key.
+   *
+   * @param {UserPublicKey} caller - The derived identity of the transaction author.
+   * @param {UserPublicKey} spender - The key that may spend on behalf of the caller.
+   * @param {Uint<128>} value - The amount of tokens the `spender` may spend.
+   * @return {Boolean} - Returns a boolean value indicating whether the operation succeeded.
+   */
+  export circuit approve(caller: Identity_UserPublicKey,
+                         spender: Identity_UserPublicKey,
+                         value: Uint<128>
+                         ): Boolean {
+    Initializable_assertInitialized();
+    _approve(caller, spender, value);
+    return true;
+  }
+
+  /**
+   * @description Moves `value` tokens from `fromAccount` to `to` using the allowance mechanism.
+   * `value` is deducted from `caller`'s allowance over `fromAccount`'s tokens.
+   *
+   * @dev `caller` is the DERIVED identity of the transaction author (the spender).
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - `fromAccount` is not the zero key.
+   * - `fromAccount` must have a balance of at least `value`.
+   * - `to` is not the zero key.
+   * - `caller` has an allowance of `fromAccount`'s tokens of at least `value`.
+   *
+   * @param {UserPublicKey} caller - The derived identity of the transaction author (spender).
+   * @param {UserPublicKey} fromAccount - The current owner of the tokens for the transfer.
+   * @param {UserPublicKey} to - The recipient of the transfer.
+   * @param {Uint<128>} value - The amount to transfer.
+   * @return {Boolean} - As per the IERC20 spec, this MUST return true.
+   */
+  export circuit transferFrom(
+                   caller: Identity_UserPublicKey,
+                   fromAccount: Identity_UserPublicKey,
+                   to: Identity_UserPublicKey,
+                   value: Uint<128>
+                   ): Boolean {
+    Initializable_assertInitialized();
+    _spendAllowance(fromAccount, caller, value);
+    _transfer(fromAccount, to, value);
+    return true;
+  }
+
+  /**
+   * @description Moves a `value` amount of tokens from `fromAccount` to `to`.
+   * This circuit can be used to e.g. implement automatic token fees, slashing
+   * mechanisms, etc. Internal circuit without access restriction.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - `fromAccount` is not the zero key.
+   * - `fromAccount` must have at least a balance of `value`.
+   * - `to` must not be the zero key.
+   *
+   * @param {UserPublicKey} fromAccount - The owner of the tokens to transfer.
+   * @param {UserPublicKey} to - The recipient of the transferred tokens.
+   * @param {Uint<128>} value - The amount of tokens to transfer.
+   * @return {[]} - Empty tuple.
+   */
+  export circuit _transfer(
+                   fromAccount: Identity_UserPublicKey,
+                   to: Identity_UserPublicKey,
+                   value: Uint<128>
+                   ): [] {
+    Initializable_assertInitialized();
+    assert(!Identity_isUserKeyZero(fromAccount), "FungibleToken: invalid sender");
+    assert(!Identity_isUserKeyZero(to), "FungibleToken: invalid receiver");
+
+    _update(fromAccount, to, value);
+  }
+
+  /**
+   * @description Transfers a `value` amount of tokens from `fromAccount` to `to`, or alternatively mints (or burns) if `fromAccount`
+   * (or `to`) is the zero key.
+   * @dev Checks for a mint overflow in order to output a more readable error message.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   *
+   * @param {UserPublicKey} fromAccount - The original owner of the tokens moved (zero key if minted).
+   * @param {UserPublicKey} to - The recipient of the tokens moved (zero key if burned).
+   * @param {Uint<128>} value - The amount of tokens moved.
+   * @return {[]} - Empty tuple.
+   */
+  circuit _update(fromAccount: Identity_UserPublicKey,
+                  to: Identity_UserPublicKey,
+                  value: Uint<128>
+                  ): [] {
+    Initializable_assertInitialized();
+    if (Identity_isUserKeyZero(disclose(fromAccount))) {
+      // Mint
+      const MAX_UINT128 = 340282366920938463463374607431768211455;
+      assert(MAX_UINT128 - _totalSupply >= value, "FungibleToken: arithmetic overflow");
+
+      _totalSupply = disclose(_totalSupply + value as Uint<128>);
+    } else {
+      const fromBal = balanceOf(fromAccount);
+      assert(fromBal >= value, "FungibleToken: insufficient balance");
+      _balances.insert(disclose(fromAccount), disclose(fromBal - value as Uint<128>));
+    }
+
+    if (Identity_isUserKeyZero(disclose(to))) {
+      // Burn
+      _totalSupply = disclose(_totalSupply - value as Uint<128>);
+    } else {
+      const toBal = balanceOf(to);
+      _balances.insert(disclose(to), disclose(toBal + value as Uint<128>));
+    }
+  }
+
+  /**
+   * @description Creates a `value` amount of tokens and assigns them to `account`,
+   * by transferring it from the zero key. Relies on the `_update` mechanism.
+   * Internal circuit without access restriction — gate it in the composing contract.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - `account` is not the zero key.
+   *
+   * @param {UserPublicKey} account - The recipient of tokens minted.
+   * @param {Uint<128>} value - The amount of tokens minted.
+   * @return {[]} - Empty tuple.
+   */
+  export circuit _mint(account: Identity_UserPublicKey, value: Uint<128>): [] {
+    Initializable_assertInitialized();
+    assert(!Identity_isUserKeyZero(account), "FungibleToken: invalid receiver");
+    _update(zeroKey(), account, value);
+  }
+
+  /**
+   * @description Destroys a `value` amount of tokens from `account`, lowering the total supply.
+   * Relies on the `_update` mechanism. Internal circuit without access restriction —
+   * gate it in the composing contract.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - `account` is not the zero key.
+   * - `account` must have at least a balance of `value`.
+   *
+   * @param {UserPublicKey} account - The target owner of tokens to burn.
+   * @param {Uint<128>} value - The amount of tokens to burn.
+   * @return {[]} - Empty tuple.
+   */
+  export circuit _burn(account: Identity_UserPublicKey, value: Uint<128>): [] {
+    Initializable_assertInitialized();
+    assert(!Identity_isUserKeyZero(account), "FungibleToken: invalid sender");
+    _update(account, zeroKey(), value);
+  }
+
+  /**
+   * @description Sets `value` as the allowance of `spender` over the `owner`'s tokens.
+   * Internal circuit without access restriction.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - `owner` is not the zero key.
+   * - `spender` is not the zero key.
+   *
+   * @param {UserPublicKey} owner - The owner of the tokens.
+   * @param {UserPublicKey} spender - The spender of the tokens.
+   * @param {Uint<128>} value - The amount of tokens `spender` may spend on behalf of `owner`.
+   * @return {[]} - Empty tuple.
+   */
+  export circuit _approve(
+                   owner: Identity_UserPublicKey,
+                   spender: Identity_UserPublicKey,
+                   value: Uint<128>
+                   ): [] {
+    Initializable_assertInitialized();
+    assert(!Identity_isUserKeyZero(owner), "FungibleToken: invalid owner");
+    assert(!Identity_isUserKeyZero(spender), "FungibleToken: invalid spender");
+    if (!_allowances.member(disclose(owner))) {
+      // If owner doesn't exist, create and insert a new sub-map directly
+      _allowances.insert(disclose(owner), default<Map<Identity_UserPublicKey, Uint<128>>>);
+    }
+    _allowances.lookup(owner).insert(disclose(spender), disclose(value));
+  }
+
+  /**
+   * @description Updates `owner`'s allowance for `spender` based on spent `value`.
+   * Does not update the allowance value in case of infinite allowance.
+   *
+   * Requirements:
+   *
+   * - Contract is initialized.
+   * - `spender` must have at least an allowance of `value` from `owner`.
+   *
+   * @param {UserPublicKey} owner - The owner of the tokens.
+   * @param {UserPublicKey} spender - The spender of the tokens.
+   * @param {Uint<128>} value - The amount of token allowance to spend.
+   * @return {[]} - Empty tuple.
+   */
+  export circuit _spendAllowance(
+                   owner: Identity_UserPublicKey,
+                   spender: Identity_UserPublicKey,
+                   value: Uint<128>
+                   ): [] {
+    Initializable_assertInitialized();
+    assert((_allowances.member(disclose(owner)) &&
+            _allowances.lookup(owner).member(disclose(spender))),
+           "FungibleToken: insufficient allowance"
+           );
+
+    const currentAllowance = _allowances.lookup(owner).lookup(disclose(spender));
+    const MAX_UINT128 = 340282366920938463463374607431768211455;
+    if (currentAllowance < MAX_UINT128) {
+      assert(currentAllowance >= value, "FungibleToken: insufficient allowance");
+      _approve(owner, spender, currentAllowance - value as Uint<128>);
+    }
+  }
+
+  // The zero user key, used as the mint source / burn destination sentinel.
+  pure circuit zeroKey(): Identity_UserPublicKey {
+    return default<Identity_UserPublicKey>;
+  }
+}

@@ -1,0 +1,223 @@
+# Midnight Indexer Error Codes
+
+> **Last verified:** 2026-05-04 against `midnightntwrk/midnight-indexer@main` (anchors: `indexer-api/src/infra/api.rs`, `indexer-api/src/infra/api/v4/*.rs`, `indexer-common/src/`; most recent file 2026-04).
+
+## Source
+
+The Midnight indexer (`midnight-indexer` repo) is a Rust service built on Axum, serving a GraphQL API via `async-graphql` (typically on port 8088). All errors use `thiserror` derives.
+
+Errors are split into two categories:
+
+- **Client errors** — surfaced verbatim to the caller in GraphQL error responses
+- **Server errors** — logged internally; the caller receives only "Internal Server Error"
+
+You encounter these errors when:
+- A GraphQL query or mutation is rejected due to invalid input
+- The `/ready` health endpoint returns non-200 during startup or when the indexer lags behind the node
+- Infrastructure failures occur (database, messaging, cipher)
+
+---
+
+## HTTP Status Codes
+
+These are returned by the Axum HTTP layer before any GraphQL processing occurs.
+
+| Code | Endpoint / Context | Meaning | Fixes |
+|------|--------------------|---------|-------|
+| 200 OK | `GET /ready` | Indexer is caught up with the node | N/A — service is healthy |
+| 308 Permanent Redirect | `/api/<other>` (non-versioned) | Redirect to the latest API version (currently `/api/v4/...`) | Use the redirected URL; clients should follow redirects |
+| 404 Not Found | `/api/v3/<unknown>`, `/api/v4/<unknown>` | Subpath under a known API version is not registered | Verify the GraphQL endpoint path |
+| 400 Bad Request | `async-graphql-axum` request extractor | Returned when the request body cannot be parsed into a GraphQL request (malformed JSON, JSON-array batch on single endpoint, body read I/O error, or multipart parse failure). **Real GraphQL semantic/validation errors still return HTTP 200 with `errors[]` inside the response body** (async-graphql default). See "HTTP 400 paths" below for the exhaustive list. | Inspect the response body — it is the Rust `Debug` repr of the underlying `ParseRequestError` variant (e.g. `InvalidRequest(...)`, `UnsupportedBatch`). Fix the request payload accordingly. |
+| 413 Payload Too Large | GraphQL body | Request body exceeds the configured size limit. Body string is verbatim `"length limit exceeded"`. The indexer's `transform_lentgh_limit_exceeded` middleware intercepts the upstream `tower-http` `RequestBodyLimit` 400 and rewrites it to 413 — but **only** when the response body matches the `LENGTH_LIMIT_EXCEEDED_BODY` sentinel. Other 400s pass through unchanged. | Reduce query complexity, paginate results, or split into multiple smaller queries |
+| 503 Service Unavailable | `GET /ready` | Body string verbatim: `"indexer has not yet caught up with the node"` | Wait for the indexer to finish syncing; check node connectivity and indexer logs |
+
+> **GraphQL responses do NOT carry `extensions.code`.** Clients distinguish client vs server errors by inspecting `errors[].message` — server errors surface as the literal string `"Internal Server Error"`; client errors surface verbatim.
+
+### HTTP 400 paths (exhaustive)
+
+The indexer mounts **only** `POST /api/v{3,4}/graphql` (see `indexer-api/src/infra/api/v4.rs::make_app`), so a `GET` against the GraphQL endpoint returns 405, not 400. All HTTP 400 responses originate from `async-graphql-axum`'s `GraphQLRequest` extractor (which delegates to `async_graphql::http::receive_batch_body`) and pass through the indexer's `transform_lentgh_limit_exceeded` middleware unchanged unless the body matches the body-limit sentinel.
+
+The extractor's `GraphQLRejection::into_response` emits **413** for `ParseRequestError::PayloadTooLarge` and **400** for every other variant of `ParseRequestError`, with response body `format!("{:?}", err)` — the Rust `Debug` repr of the variant (note: **Debug, not Display**). All reachable variants for the indexer:
+
+| Trigger | `ParseRequestError` variant | Response body shape | Remediation |
+|---------|----------------------------|--------------------|-------------|
+| Malformed JSON request body (e.g. trailing comma, wrong types, missing `query` field) | `InvalidRequest(Box<dyn Error>)` | `InvalidRequest(<inner-error-debug>)` | Send well-formed JSON matching the GraphQL-over-HTTP request shape `{ "query": "...", "variables": {...}, "operationName": "..." }`. |
+| Client sends a JSON array (batch) to the single-request endpoint | `UnsupportedBatch` | `UnsupportedBatch` | The indexer wires `GraphQLRequest` (singular) — batches are not supported. Send one query per request. |
+| Body-stream I/O failure (network glitch, premature client disconnect on a chunked body), or any non-`PayloadTooLarge` `io::Error` from the body reader | `Io(std::io::Error)` | `Io(<io-error-debug>)` | Retry the request. If persistent, inspect indexer logs and client networking. |
+| Body exceeds `request_body_limit` | `Io(...)` wrapping the `tower-http` `RequestBodyLimit` overflow | (rewritten to **413** by `transform_lentgh_limit_exceeded` with body `"length limit exceeded"`) | See 413 row above. |
+| Client sends `Content-Type: multipart/form-data` (the indexer does not expose uploads but the extractor enters its multipart branch on this content type): bad multipart framing → `InvalidMultipart(multer::Error)`; missing `operations`/`map`/files parts → `MissingOperatorsPart`/`MissingMapPart`/`MissingFiles`/`NotUpload`; bad files map JSON → `InvalidFilesMap(Box<dyn Error>)` | as listed | Debug repr of the variant, e.g. `MissingMapPart`, `InvalidMultipart(...)` | Use `Content-Type: application/json` — the indexer's GraphQL endpoint expects JSON, not multipart. |
+
+Confirmed against `async-graphql/async-graphql@82cd1f15c2a66c6134be6b93e3ac6331847934c6` (`integrations/axum/src/extract.rs`, `src/error.rs`) and `midnightntwrk/midnight-indexer@main` (`indexer-api/src/infra/api.rs`, `indexer-api/src/infra/api/v4.rs`). The previous "stepping-stone-only" framing was incomplete: non-body-limit 400s **do** surface to clients, with `Debug`-formatted bodies.
+
+---
+
+## GraphQL Client Error Messages
+
+These strings are returned verbatim inside GraphQL error responses (`errors[].message`). They indicate invalid caller-supplied input.
+
+### Block Errors
+
+| Message | Meaning | Fix |
+|---------|---------|-----|
+| `"invalid block hash"` | The supplied block hash is not valid hex or has the wrong length | Verify the block hash format; it must be a valid 32-byte hex-encoded string |
+| `"block with hash {hash} not found"` | No block with the given hash exists in the indexed chain | The block may not be finalized yet or the hash is incorrect; check the hash and try again |
+| `"block with height {height} not found"` | No block at the given height has been indexed | The indexer may not have reached that height yet; check sync status via `GET /ready` |
+
+### Viewing Key / Session Errors
+
+| Message | Meaning | Fix |
+|---------|---------|-----|
+| `"invalid viewing key"` | The supplied viewing key failed to decode or validate | Ensure the viewing key was generated by a compatible SDK version and is correctly encoded |
+| `"unknown or expired session ID"` | The session ID does not exist or has timed out | Re-authenticate to obtain a fresh session ID |
+| `"invalid session ID"` | The session ID failed to decode — it is not valid hex, or it did not decode to exactly 32 bytes (a session ID is a 32-byte hex string, **not** a UUID). The wire message is colon-chained, e.g. `invalid session ID: cannot hex-decode session ID: …` (bad hex) or `invalid session ID: cannot convert into session ID: cannot create byte array of len 32 from input of len N` (wrong length) | Supply the session ID exactly as returned by the `connect` mutation — a 64-hex-char (32-byte) value. A well-formed but unrecognised id returns the distinct `"unknown or expired session ID"` instead |
+
+### Transaction Errors
+
+| Message | Meaning | Fix |
+|---------|---------|-----|
+| `"invalid transaction hash"` | The transaction hash is not a valid hex-encoded hash | Verify the hash format — must be a valid 32-byte hex string |
+| `"invalid transaction identifier"` | The transaction identifier failed validation | Check the identifier format; it may be base58 or hex depending on context |
+
+### Address Errors
+
+| Message | Meaning | Fix |
+|---------|---------|-----|
+| `"invalid address"` | The supplied address (unshielded, shielded, or dust) failed bech32m decode or HRP validation | Verify address format; see Address Format Errors section for expected HRP prefixes |
+| `"invalid Cardano reward address"` | The Cardano stake address failed validation | Use a valid bech32-encoded Cardano stake address with HRP `stake` (mainnet) or `stake_test` (testnet) and ensure it is 29 bytes |
+| `"invalid hex-encoded nullifier prefix"` | The nullifier prefix is not valid hex | Supply a correctly hex-encoded nullifier prefix |
+| `"invalid hex-encoded dust address"` | The dust address hex encoding is invalid | Supply a correctly hex-encoded dust address |
+
+### Pagination / Identifier Errors
+
+| Message | Meaning | Fix |
+|---------|---------|-----|
+| `"invalid offset"` | The pagination offset value is not a valid non-negative integer | Use a non-negative integer for the offset parameter |
+| `"invalid identifier"` | A generic identifier (e.g., contract address, key) failed validation | Verify the format of the identifier being passed |
+| `"startIndex must not be negative"` | `connect` mutation's `start_index` is < 0 | Use a non-negative `start_index` |
+| `"maximum of ten reward addresses allowed"` | More than 10 Cardano reward addresses supplied in a single query | Split into batches of 10 or fewer addresses |
+| `"maximum of ten nullifier prefixes allowed"` | More than 10 nullifier prefixes supplied in a single subscription | Split into batches of 10 or fewer prefixes |
+| `"nullifierPrefixes must not be empty"` | The `nullifierPrefixes` argument is empty | Provide at least one prefix |
+| `"nullifierPrefixes elements must not be empty"` | One of the prefixes is empty | Each prefix must be a non-empty hex string |
+| `"invalid bech32m dust address"` | Dust address used in `dust_generations` failed bech32m decode (distinct from `"invalid hex-encoded dust address"`) | Provide a valid bech32m-encoded dust address |
+| `"invalid start_index and/or end_index"` | Zswap/dust merkle tree collapsed update failed (`LedgerStateCacheError::Ledger(InvalidUpdate)`) | Verify the start/end indices are within the tree's current range |
+
+---
+
+## Domain Errors
+
+### InvalidNetworkIdError
+
+Returned when a network ID value fails validation. Display strings are verbatim from `#[error(...)]`:
+
+| Variant | Display string | Fix |
+|---------|----------------|-----|
+| `Empty` | `"network ID must not be empty"` | Provide a non-empty network ID string |
+| `NotLowercase(String)` | `"network ID must be all lowercase (was:{0})"` | Convert the network ID to lowercase before use |
+
+### ProtocolVersionError
+
+Returned when a protocol version value cannot be resolved to a known version.
+
+| Variant | Meaning | Fix |
+|---------|---------|-----|
+| `ScaleDecode` | SCALE decoding of the protocol version failed | The raw bytes are malformed; this is typically an internal node/indexer mismatch |
+| `Unsupported(u32)` | Protocol version number is not in a recognized range | Valid ranges: 22000–23000 (maps to `V0_22`), 1000000–1001000 (maps to `V1_0`); update the indexer if a new version has been released |
+| `TryFromI64` | The version value cannot be converted from i64 | The raw version value is negative or out of i64 representable range; internal error |
+
+### ledger::Error
+
+Internal ledger errors (**14 variants**). These are Server errors — the caller sees "Internal Server Error". Check indexer logs for details. Display strings are verbatim from `#[error(...)]`:
+
+| Variant | Display string |
+|---------|----------------|
+| `LoadLedgerState` | `"failed to load ledger state"` |
+| `Serialize(label)` | `"cannot serialize {label}"` |
+| `Deserialize(label)` | `"cannot deserialize {label}"` |
+| `FromUtf8` | `"cannot convert bytes to UTF-8"` |
+| `GetContractState` | `"failed to retrieve contract state"` |
+| `ByteArrayLen(ByteArrayLenError)` | Transparent — display delegates to the wrapped `ByteArrayLenError` |
+| `InvalidUpdate` | `"invalid Merkle tree collapsed update"` (specifically — this is the error that maps to the client-facing `"invalid start_index and/or end_index"` message) |
+| `MalformedTransaction` | `"malformed transaction"` |
+| `SystemTransaction` | `"system transaction error"` |
+| `BlockLimitExceeded` | `"block limit exceeded during post_block_update"` |
+| `TransactionCost` | `"failed to calculate transaction cost"` |
+| `BackwardsLedgerStateTranslation` | Ledger state translation went backwards (version regression) |
+| `UnsupportedLedgerStateTranslation` | No translation path available for this ledger state version |
+| `LedgerStateTranslation` | Generic ledger state translation failure |
+
+---
+
+## Address Format Errors
+
+### DecodeAddressError
+
+Returned when a Midnight address fails to decode.
+
+| Variant | Meaning | Fix |
+|---------|---------|-----|
+| `Decode` | bech32m decode failed (invalid characters, bad checksum, or truncated) | Ensure the address is a valid bech32m string |
+| `InvalidHrp` | Human-readable part (HRP) does not match the expected prefix | Use the correct address type for the operation; see expected HRP prefixes below |
+
+**Expected HRP prefixes:**
+
+| Address Type | Mainnet HRP | Non-Mainnet HRP |
+|-------------|-------------|-----------------|
+| Unshielded | `mn_addr` | `mn_addr_{network_id}` |
+| Encryption key (shielded) | `mn_shield-esk` | `mn_shield-esk_{network_id}` |
+| Dust | `mn_dust` | `mn_dust_{network_id}` |
+
+### DecodeCardanoRewardAddressError
+
+Returned when a Cardano stake (reward) address fails to decode.
+
+| Variant | Display string / meaning | Fix |
+|---------|---------|-----|
+| `Decode` | bech32 decode failed | Ensure the address is a valid bech32-encoded Cardano stake address |
+| `InvalidHrp` | HRP is not `stake` or `stake_test` | Use a Cardano mainnet (`stake`) or testnet (`stake_test`) reward address |
+| `InvalidLength(actual)` | `"invalid Cardano reward address length: expected 29 bytes, was {actual}"` | The address payload must be exactly 29 bytes; verify the address is not truncated or padded |
+| `WrongNetwork { expected, actual }` | `"wrong Cardano network: expected {expected}, was {actual}"` — both values are HRP labels (`stake` vs `stake_test`), **not network bytes** | Use the correct network's HRP for your environment (mainnet `stake` vs testnet `stake_test`) |
+
+---
+
+## Chain Indexer Errors (SubxtNodeError)
+
+These errors arise from the streaming/subscription layer that connects the indexer to the Midnight node via Subxt. Most trigger automatic reconnection; persistent errors indicate node connectivity or compatibility problems. These are Server errors — check indexer logs.
+
+**27 variants total.** The most common:
+
+| Variant | Description | Action |
+|---------|-------------|--------|
+| `SubscribeFinalizedBlocks` | Cannot subscribe to finalized block stream from the node | Verify the node's WebSocket endpoint is reachable; check node logs |
+| `ReceiveBlock` | Node disconnected mid-stream | The indexer auto-reconnects; if persistent, check node stability |
+| `GetContractState` | Cannot fetch contract state from the node | Node RPC failure; check node logs and connectivity |
+| `GenesisLedgerStateNotFound` | No genesis ledger state found in system parameters | Node system parameters storage is missing genesis data; may indicate a misconfigured or corrupted node |
+| `ProtocolVersion` | Unsupported protocol version encountered during sync | The indexer does not recognize this protocol version; upgrade the indexer |
+| `ScaleDecode` | SCALE decode failure when processing a block or event | Data from the node could not be decoded; likely a version mismatch between indexer and node |
+
+---
+
+## Infrastructure Errors
+
+These are Server errors — they are logged internally and hidden behind "Internal Server Error" for callers. Investigate via indexer logs.
+
+### Database
+
+| Category | Examples | Common Causes |
+|----------|---------|---------------|
+| `PostgresPool` | Connection pool exhaustion, failed to acquire connection | PostgreSQL unreachable, connection limit exceeded, or credentials wrong |
+| `SqlitePool` | SQLite pool failure | SQLite file locked, disk full, or permissions issue |
+| Migration errors | Schema migration failed on startup | Database schema out of date or incompatible; run pending migrations |
+
+### Messaging (NATS)
+
+| Category | Description | Common Causes |
+|----------|-------------|---------------|
+| NATS publisher errors | Failed to publish a message to NATS | NATS server unreachable or subject permissions denied |
+| NATS subscriber errors | Failed to subscribe to or receive from a NATS subject | NATS server connectivity issue or subject not found |
+
+### Cipher
+
+| Error | Display string / meaning | Fix |
+|-------|---------|-----|
+| Hex decode failure | `"cannot hex-decode secret"` | Verify the cipher key configuration is correctly hex-encoded |
+| Key too short | `"secret must be at least 32 bytes long, but was {actual}"` — the 32-byte minimum is on the **decoded** secret length, not the hex-encoded form | Supply a key whose decoded length is ≥ 32 bytes (i.e. ≥ 64 hex characters) |

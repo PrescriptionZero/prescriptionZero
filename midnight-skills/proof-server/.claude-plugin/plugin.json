@@ -1,0 +1,20 @@
+{
+  "name": "proof-server",
+  "version": "0.2.0",
+  "description": "Deep technical reference for the Midnight proof server \u2014 internal architecture, complete API reference, configuration tuning, and operational monitoring",
+  "author": {
+    "name": "Aaron Bassett",
+    "email": "aaron@devrel-ai.com"
+  },
+  "homepage": "https://github.com/devrelaicom/midnight-expert",
+  "repository": "https://github.com/devrelaicom/midnight-expert.git",
+  "license": "MIT",
+  "keywords": [
+    "midnight",
+    "proof-server",
+    "zk-proofs",
+    "api",
+    "operations",
+    "configuration"
+  ]
+}

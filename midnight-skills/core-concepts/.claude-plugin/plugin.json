@@ -1,0 +1,17 @@
+{
+  "name": "core-concepts",
+  "version": "0.3.2",
+  "description": "Conceptual foundations for understanding the Midnight Network: architecture, data models, privacy patterns, protocols, tokenomics, and zero-knowledge proofs",
+  "author": {
+    "name": "Aaron Bassett"
+  },
+  "keywords": [
+    "midnight",
+    "blockchain",
+    "zero-knowledge",
+    "zk-proofs",
+    "privacy",
+    "architecture",
+    "concepts"
+  ]
+}

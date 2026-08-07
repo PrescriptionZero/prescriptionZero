@@ -1,0 +1,88 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/SessionStart.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "midnight-verify:contract-writer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/subagent-stop-contract-writer.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "midnight-verify:source-investigator",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/subagent-stop-source-investigator.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "midnight-verify:type-checker",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/subagent-stop-type-checker.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "midnight-verify:cli-tester",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/subagent-stop-cli-tester.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "midnight-verify:sdk-tester",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/subagent-stop-sdk-tester.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "midnight-verify:witness-verifier",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/subagent-stop-witness-verifier.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "midnight-verify:zkir-checker",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/subagent-stop-zkir-checker.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

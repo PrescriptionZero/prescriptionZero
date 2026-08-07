@@ -1,0 +1,109 @@
+// AccessControlledToken.compact
+// A fungible token with role-based minting and burning using AccessControl.
+//
+// Uses the LOCAL modules under ../modules (no external submodule required).
+
+pragma language_version >= 0.23;
+
+// =============================================================================
+//  SECURE PATTERN — witness-derived identity
+// =============================================================================
+//  Each instance holds a single 32-byte secret in private state. Caller identity
+//  is derived INSIDE the circuit from that secret via the `Identity` module's
+//  domain-separated `persistentHash` (`deriveUserPublicKey`), so a caller can
+//  only act as the identity they hold the secret for. `ownPublicKey()` is
+//  intentionally NOT used for authorization — it is prover-supplied and
+//  bypassable. At deploy the constructor grants `DEFAULT_ADMIN_ROLE` to the
+//  deployer's DERIVED user key, so only that secret holder can grant/revoke
+//  roles. Only the safe wrappers below (which compute the caller from the
+//  witness) are exported; the AccessControl module's identity-parameterized
+//  circuits are NOT re-exported, since that would let a caller pass an arbitrary
+//  identity and defeat the protection.
+// =============================================================================
+
+import CompactStandardLibrary;
+
+import "../modules/access/AccessControl" prefix AccessControl_;
+
+import "../modules/token/FungibleToken" prefix FungibleToken_;
+
+import "../modules/utils/Identity" prefix Identity_;
+
+// Re-export identity types and pure derivations for the off-chain TypeScript
+// layer. Prefixed imports bring names into scope WITH the prefix.
+export { Identity_UserSecretKey, Identity_UserPublicKey };
+
+export { Identity_deriveUserPublicKey };
+
+// Read-only views are safe to expose (they take derived keys, never authorize).
+export { FungibleToken_name,
+         FungibleToken_symbol,
+         FungibleToken_decimals,
+         FungibleToken_totalSupply,
+         FungibleToken_balanceOf,
+         FungibleToken_allowance };
+
+export { AccessControl_hasRole, AccessControl_getRoleAdmin };
+
+export sealed ledger MINTER_ROLE: Bytes<32>;
+
+export sealed ledger BURNER_ROLE: Bytes<32>;
+
+// The witness: each prover supplies their own 32-byte secret from private state.
+witness getUserSecret(): Identity_UserSecretKey;
+
+constructor(name: Opaque<"string">, symbol: Opaque<"string">, decimals: Uint<8>,) {
+  FungibleToken_initialize(name, symbol, decimals);
+  MINTER_ROLE = persistentHash<Bytes<32>>(pad(32, "MINTER_ROLE"));
+  BURNER_ROLE = persistentHash<Bytes<32>>(pad(32, "BURNER_ROLE"));
+  // Grant the deployer the admin role under their DERIVED user key — they can
+  // grant/revoke any role. The derived key is the proven identity of whoever
+  // holds the deploy secret; no prover-supplied address is trusted.
+  AccessControl__grantRole(
+    AccessControl_DEFAULT_ADMIN_ROLE,
+    disclose(Identity_deriveUserPublicKey(getUserSecret()))
+    );
+}
+
+/** IFungibleToken — identity-sensitive wrappers compute the caller from the witness */
+
+export circuit transfer(to: Identity_UserPublicKey, value: Uint<128>): Boolean {
+  const caller = disclose(Identity_deriveUserPublicKey(getUserSecret()));
+  return FungibleToken_transfer(caller, to, value);
+}
+
+export circuit approve(spender: Identity_UserPublicKey, value: Uint<128>): Boolean {
+  const caller = disclose(Identity_deriveUserPublicKey(getUserSecret()));
+  return FungibleToken_approve(caller, spender, value);
+}
+
+/** Role management — admin only (gated inside AccessControl on the derived caller) */
+
+export circuit grantRole(roleId: Bytes<32>, account: Identity_UserPublicKey): [] {
+  const caller = disclose(Identity_deriveUserPublicKey(getUserSecret()));
+  AccessControl_grantRole(roleId, account, caller);
+}
+
+export circuit revokeRole(roleId: Bytes<32>, account: Identity_UserPublicKey): [] {
+  const caller = disclose(Identity_deriveUserPublicKey(getUserSecret()));
+  AccessControl_revokeRole(roleId, account, caller);
+}
+
+export circuit renounceRole(roleId: Bytes<32>): [] {
+  const caller = disclose(Identity_deriveUserPublicKey(getUserSecret()));
+  AccessControl_renounceRole(roleId, caller);
+}
+
+/** Role-protected token operations */
+
+export circuit mint(recipient: Identity_UserPublicKey, value: Uint<128>): [] {
+  const caller = disclose(Identity_deriveUserPublicKey(getUserSecret()));
+  AccessControl_assertOnlyRole(MINTER_ROLE, caller);
+  FungibleToken__mint(recipient, value);
+}
+
+export circuit burn(account: Identity_UserPublicKey, value: Uint<128>): [] {
+  const caller = disclose(Identity_deriveUserPublicKey(getUserSecret()));
+  AccessControl_assertOnlyRole(BURNER_ROLE, caller);
+  FungibleToken__burn(account, value);
+}

@@ -1,0 +1,41 @@
+{
+  "name": "compact-examples",
+  "version": "0.5.0",
+  "description": "Compilable Compact smart contract examples — beginner contracts, reusable modules, token implementations, and full applications with witnesses and tests. All code at pragma language_version >= 0.22.",
+  "author": {
+    "name": "Aaron Bassett",
+    "email": "aaron@devrel-ai.com"
+  },
+  "homepage": "https://github.com/devrelaicom/midnight-expert",
+  "repository": "https://github.com/devrelaicom/midnight-expert.git",
+  "license": "MIT",
+  "keywords": [
+    "midnight",
+    "compact",
+    "smart-contracts",
+    "examples",
+    "witnesses",
+    "testing",
+    "counter",
+    "bulletin-board",
+    "ownable",
+    "access-control",
+    "pausable",
+    "initializable",
+    "fungible-token",
+    "non-fungible-token",
+    "multi-token",
+    "shielded-token",
+    "nft",
+    "math",
+    "cryptography",
+    "schnorr",
+    "queue",
+    "identity",
+    "modules",
+    "kitties",
+    "zkloan",
+    "rwa",
+    "tbtc"
+  ]
+}

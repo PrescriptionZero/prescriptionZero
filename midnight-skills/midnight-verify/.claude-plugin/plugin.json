@@ -1,0 +1,32 @@
+{
+  "name": "midnight-verify",
+  "version": "0.14.0",
+  "description": "Verification framework for Midnight claims \u2014 verifies Compact code by compiling and executing test contracts, SDK/TypeScript claims by type-checking and devnet E2E testing, ZKIR circuits by running through the WASM checker and inspecting compiled structure, witness implementations by cross-domain type-checking and execution against compiled contracts, or by inspecting source code. Multi-agent pipeline with explicit /verify command.",
+  "author": {
+    "name": "Aaron Bassett",
+    "email": "aaron@devrel-ai.com"
+  },
+  "homepage": "https://github.com/devrelaicom/midnight-expert",
+  "repository": "https://github.com/devrelaicom/midnight-expert.git",
+  "license": "MIT",
+  "keywords": [
+    "midnight",
+    "compact",
+    "verification",
+    "correctness",
+    "compile",
+    "execute",
+    "source-code",
+    "zero-knowledge",
+    "fact-checking",
+    "testing",
+    "sdk",
+    "typescript",
+    "zkir",
+    "circuit",
+    "proof",
+    "checker",
+    "wasm",
+    "witness"
+  ]
+}

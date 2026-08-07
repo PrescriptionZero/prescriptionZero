@@ -1,0 +1,32 @@
+{
+  "name": "midnight-wallet",
+  "version": "0.6.0",
+  "description": "Wallet SDK reference, test-wallet management patterns, and SDK regression checking for Midnight Network development.",
+  "author": {
+    "name": "Aaron Bassett",
+    "email": "aaron@devrel-ai.com"
+  },
+  "homepage": "https://github.com/devrelaicom/midnight-expert",
+  "repository": "https://github.com/devrelaicom/midnight-expert.git",
+  "license": "MIT",
+  "keywords": [
+    "midnight",
+    "wallet",
+    "wallet-sdk",
+    "night-tokens",
+    "dust-tokens",
+    "transfer",
+    "airdrop",
+    "balance",
+    "test-wallets",
+    "devnet",
+    "funding",
+    "bip39",
+    "mnemonic",
+    "wallet-facade",
+    "hd-wallet",
+    "shielded",
+    "unshielded",
+    "sdk-regression"
+  ]
+}

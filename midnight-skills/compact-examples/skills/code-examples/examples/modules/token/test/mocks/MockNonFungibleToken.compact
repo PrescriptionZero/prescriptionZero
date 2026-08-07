@@ -1,0 +1,166 @@
+pragma language_version >= 0.22;
+
+// =============================================================================
+//  SECURE PATTERN — witness-derived identity (test mock)
+// =============================================================================
+//  Mirrors the production split: identity-sensitive circuits derive the caller
+//  from a private witness secret (`getUserSecret`) inside the proof, never from
+//  `ownPublicKey()`. The witness-derived wrappers below (approve /
+//  setApprovalForAll / transferFrom) compute the caller and pass it into the
+//  module — exactly as the top-level contract does. The internal `_*` circuits
+//  are exposed directly (taking `UserPublicKey` arguments) so unit tests can
+//  drive ledger state and assert module invariants without a secret.
+// =============================================================================
+
+import CompactStandardLibrary;
+
+import "../../NonFungibleToken" prefix NonFungibleToken_;
+
+export { NonFungibleToken_UserSecretKey,
+         NonFungibleToken_UserPublicKey,
+         NonFungibleToken_AdminPublicKey };
+
+export { NonFungibleToken_deriveUserPublicKey, NonFungibleToken_deriveAdminPublicKey };
+
+// Each prover supplies their own 32-byte secret from private state. Tests select
+// the acting caller by swapping this secret (the simulator's `as(...)` analogue).
+witness getUserSecret(): NonFungibleToken_UserSecretKey;
+
+/**
+ * @description `init` is a param for testing.
+ * If `init` is true, initialize the contract with `_name` and `_symbol`.
+ * Otherwise, the contract will not initialize and we can test the
+ * contract when it is not initialized properly.
+*/
+constructor(_name: Opaque<"string">, _symbol: Opaque<"string">, init: Boolean) {
+  if (disclose(init)) {
+    NonFungibleToken_initialize(_name, _symbol);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Read-only views
+// ---------------------------------------------------------------------------
+
+export circuit name(): Opaque<"string"> {
+  return NonFungibleToken_name();
+}
+
+export circuit symbol(): Opaque<"string"> {
+  return NonFungibleToken_symbol();
+}
+
+export circuit balanceOf(account: NonFungibleToken_UserPublicKey): Uint<128> {
+  return NonFungibleToken_balanceOf(account);
+}
+
+export circuit ownerOf(tokenId: Uint<128>): NonFungibleToken_UserPublicKey {
+  return NonFungibleToken_ownerOf(tokenId);
+}
+
+export circuit tokenURI(tokenId: Uint<128>): Opaque<"string"> {
+  return NonFungibleToken_tokenURI(tokenId);
+}
+
+export circuit getApproved(tokenId: Uint<128>): NonFungibleToken_UserPublicKey {
+  return NonFungibleToken_getApproved(tokenId);
+}
+
+export circuit isApprovedForAll(
+                 owner: NonFungibleToken_UserPublicKey,
+                 operator: NonFungibleToken_UserPublicKey
+                 ): Boolean {
+  return NonFungibleToken_isApprovedForAll(owner, operator);
+}
+
+// ---------------------------------------------------------------------------
+// Witness-derived mutating wrappers (caller computed from the secret)
+// ---------------------------------------------------------------------------
+
+export circuit approve(to: NonFungibleToken_UserPublicKey, tokenId: Uint<128>): [] {
+  const caller = disclose(NonFungibleToken_deriveUserPublicKey(getUserSecret()));
+  return NonFungibleToken_approve(caller, to, tokenId);
+}
+
+export circuit setApprovalForAll(operator: NonFungibleToken_UserPublicKey, approved: Boolean): [] {
+  const caller = disclose(NonFungibleToken_deriveUserPublicKey(getUserSecret()));
+  return NonFungibleToken_setApprovalForAll(caller, operator, approved);
+}
+
+export circuit transferFrom(
+                 fromAddress: NonFungibleToken_UserPublicKey,
+                 to: NonFungibleToken_UserPublicKey,
+                 tokenId: Uint<128>
+                 ): [] {
+  const caller = disclose(NonFungibleToken_deriveUserPublicKey(getUserSecret()));
+  return NonFungibleToken_transferFrom(caller, fromAddress, to, tokenId);
+}
+
+// ---------------------------------------------------------------------------
+// Internal circuits, exposed for unit testing. These take UserPublicKey
+// arguments directly (no secret) so tests can set up and assert ledger state.
+// ---------------------------------------------------------------------------
+
+export circuit _requireOwned(tokenId: Uint<128>): NonFungibleToken_UserPublicKey {
+  return NonFungibleToken__requireOwned(tokenId);
+}
+
+export circuit _ownerOf(tokenId: Uint<128>): NonFungibleToken_UserPublicKey {
+  return NonFungibleToken__ownerOf(tokenId);
+}
+
+export circuit _approve(
+                 to: NonFungibleToken_UserPublicKey,
+                 tokenId: Uint<128>,
+                 auth: NonFungibleToken_UserPublicKey
+                 ): [] {
+  return NonFungibleToken__approve(to, tokenId, auth);
+}
+
+export circuit _checkAuthorized(
+                 owner: NonFungibleToken_UserPublicKey,
+                 spender: NonFungibleToken_UserPublicKey,
+                 tokenId: Uint<128>
+                 ): [] {
+  return NonFungibleToken__checkAuthorized(owner, spender, tokenId);
+}
+
+export circuit _isAuthorized(
+                 owner: NonFungibleToken_UserPublicKey,
+                 spender: NonFungibleToken_UserPublicKey,
+                 tokenId: Uint<128>
+                 ): Boolean {
+  return NonFungibleToken__isAuthorized(owner, spender, tokenId);
+}
+
+export circuit _getApproved(tokenId: Uint<128>): NonFungibleToken_UserPublicKey {
+  return NonFungibleToken__getApproved(tokenId);
+}
+
+export circuit _setApprovalForAll(
+                 owner: NonFungibleToken_UserPublicKey,
+                 operator: NonFungibleToken_UserPublicKey,
+                 approved: Boolean
+                 ): [] {
+  return NonFungibleToken__setApprovalForAll(owner, operator, approved);
+}
+
+export circuit _mint(to: NonFungibleToken_UserPublicKey, tokenId: Uint<128>): [] {
+  return NonFungibleToken__mint(to, tokenId);
+}
+
+export circuit _burn(tokenId: Uint<128>): [] {
+  return NonFungibleToken__burn(tokenId);
+}
+
+export circuit _transfer(
+                 fromAddress: NonFungibleToken_UserPublicKey,
+                 to: NonFungibleToken_UserPublicKey,
+                 tokenId: Uint<128>
+                 ): [] {
+  return NonFungibleToken__transfer(fromAddress, to, tokenId);
+}
+
+export circuit _setTokenURI(tokenId: Uint<128>, tokenURI: Opaque<"string">): [] {
+  return NonFungibleToken__setTokenURI(tokenId, tokenURI);
+}
