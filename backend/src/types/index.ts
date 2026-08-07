@@ -1,5 +1,4 @@
 // Tipos compartidos entre services, controllers y routes.
-// Las tablas reflejan backend/db/schema.sql; los endpoints reflejan CONTEXTO.md sección 5.4.
 // Las tablas base reflejan backend/db/schema.sql. Receta/CrearReceta reflejan el
 // modelo "Holder Commitment" (wallet Lace del paciente) de CONTEXTO.md — el
 // paciente ya no depende de usuarios_prueba, medico_id sigue viniendo de ahí.
@@ -28,10 +27,6 @@ export interface Medicamento {
 
 export interface Receta {
   id_corto: string;
-  commitment_hash: string;
-  codigo_medicamento: string;
-  fecha_vigencia: string;
-  medico_id: string;
   commitment: string; // columna real en schema.sql sigue siendo `commitment_hash`, mapear en la query
   codigo_medicamento: string;
   fecha_vigencia: string;
@@ -44,33 +39,15 @@ export interface Receta {
 
 // --- POST /api/medico/recetas ---
 
-export interface CrearRecetaBody {
-  medico_id: string;
-  paciente_nombre_local: string;
-  codigo_medicamento: string;
-  fecha_vigencia: string;
 export interface CrearRecetaRequest {
   patientWalletAddress: string;
   drugCode: string;
   expiryDate: string;
-  medicoId: string; // no está en CONTEXTO.md Paso 2, pero crearReceta() lo necesita (NOT NULL, FK)
+  medicoId: string; // no está en CONTEXTO.md Paso 2 original, pero crearReceta() lo necesita (NOT NULL, FK)
 }
 
 export interface CrearRecetaResponse {
   id_corto: string;
-  mensaje: string;
-}
-
-// --- GET /api/paciente/recetas/:id_corto ---
-
-export interface RecetaPacienteResponse {
-  id_corto: string;
-  codigo_medicamento: string;
-  fecha_vigencia: string;
-  usada: boolean;
-}
-
-// --- POST /api/paciente/generar-qr ---
   nonce_paciente: string;
   commitment: string;
 }
@@ -105,7 +82,6 @@ export interface GenerarQrResponse {
   qr_data_url: string;
 }
 
-// --- POST /api/farmacia/validar ---
 // --- POST /api/farmacia/validar (sin cambios) ---
 
 export interface ValidarRecetaBody {
@@ -125,5 +101,4 @@ export interface ValidarRecetaInvalidaResponse {
 
 export type ValidarRecetaResponse =
   | ValidarRecetaValidaResponse
-  | ValidarRecetaInvalidaResponse;
   | ValidarRecetaInvalidaResponse;
