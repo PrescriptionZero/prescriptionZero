@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { crearReceta } from '../services/db.service.js';
-import type { CrearRecetaBody, CrearRecetaResponse } from '../types/index.js';
+import type { CrearRecetaRequest, CrearRecetaResponse } from '../types/index.js';
 
 function generarIdCorto(): string {
   // "receta_" (7) + 6 chars = 13, entra sin problema en id_corto VARCHAR(20)
@@ -10,37 +10,40 @@ function generarIdCorto(): string {
 }
 
 export async function crearRecetaController(req: Request, res: Response): Promise<void> {
-  const { medico_id, codigo_medicamento, fecha_vigencia } = req.body as CrearRecetaBody;
+  const { patientWalletAddress, drugCode, expiryDate, medicoId } = req.body as CrearRecetaRequest;
 
-  if (!medico_id || !codigo_medicamento || !fecha_vigencia) {
+  if (!patientWalletAddress || !drugCode || !expiryDate || !medicoId) {
     res.status(400).json({
-      mensaje: 'Faltan campos requeridos: medico_id, codigo_medicamento, fecha_vigencia',
+      mensaje: 'Faltan campos requeridos: patientWalletAddress, drugCode, expiryDate, medicoId',
     });
     return;
   }
 
   try {
     const idCorto = generarIdCorto();
+    const noncePaciente = randomBytes(32).toString('hex');
 
-    // TODO: reemplazar por contract.service.ts cuando Dev-BE-2 lo tenga listo
-    // (generar el commitment real y llamar a registerPrescription en el contrato Compact)
-    const commitmentSimulado = createHash('sha256').update(idCorto).digest('hex');
+    // TODO: usar contract.service.deriveHolderCommitment cuando Dev-BE-2 lo suba
+    const commitment = createHash('sha256').update(noncePaciente).digest('hex');
 
     await crearReceta({
       id_corto: idCorto,
-      commitment_hash: commitmentSimulado,
-      codigo_medicamento,
-      fecha_vigencia,
-      medico_id,
+      commitment,
+      codigo_medicamento: drugCode,
+      fecha_vigencia: expiryDate,
+      medico_id: medicoId,
+      patient_wallet_address: patientWalletAddress,
     });
 
+    // El nonce se devuelve UNA vez, acá, y nunca se persiste en la base.
     const response: CrearRecetaResponse = {
       id_corto: idCorto,
-      mensaje: 'Receta emitida y registrada en blockchain',
+      nonce_paciente: noncePaciente,
+      commitment,
     };
     res.status(201).json(response);
   } catch (error) {
-    console.error('Error al crear receta:', error);
+    console.error('❌ Error al crear receta:', error);
     res.status(500).json({ mensaje: 'Error al emitir la receta' });
   }
 }
