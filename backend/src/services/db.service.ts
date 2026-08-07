@@ -1,49 +1,20 @@
 import { pool } from '../config/db.js';
-import { Receta } from '../types/index.js';
-
-export class DbService {
-  /**
-   * Busca una receta en Postgres por su id_corto trayendo el nombre del medicamento.
-   */
-  static async obtenerRecetaPorIdCorto(idCorto: string): Promise<(Receta & { nombre_medicamento?: string }) | null> {
-    const query = `
-      SELECT 
-        r.id_corto,
-        r.commitment_hash,
-        r.codigo_medicamento,
-        r.fecha_vigencia,
-        r.medico_id,
-        r.usada,
-        r.nullifier,
-        r.created_at,
-        m.nombre AS nombre_medicamento
-      FROM recetas r
-      LEFT JOIN medicamentos_controlados m ON r.codigo_medicamento = m.codigo
-      WHERE r.id_corto = $1;
-    `;
-    const res = await pool.query(query, [idCorto]);
-
-    if (res.rows.length === 0) {
-      return null;
-    }
-
-    return res.rows[0];
-  }
-}
 import type { Medicamento, Receta, UsuarioPrueba } from '../types/index.js';
 
 // La columna real en schema.sql sigue siendo `commitment_hash`; se alias-ea a
 // `commitment` en cada query para calzar con el tipo `Receta` de types/index.ts.
+// Calificadas con `recetas.` porque buscarRecetaPorIdCorto hace LEFT JOIN con
+// medicamentos_controlados, que también tiene columna `created_at` (ambigua sin calificar).
 const RECETA_COLUMNS = `
-  id_corto,
-  commitment_hash AS commitment,
-  codigo_medicamento,
-  fecha_vigencia,
-  medico_id,
-  patient_wallet_address,
-  usada,
-  nullifier,
-  created_at
+  recetas.id_corto,
+  recetas.commitment_hash AS commitment,
+  recetas.codigo_medicamento,
+  recetas.fecha_vigencia,
+  recetas.medico_id,
+  recetas.patient_wallet_address,
+  recetas.usada,
+  recetas.nullifier,
+  recetas.created_at
 `;
 
 export interface CrearRecetaParams {
@@ -67,15 +38,22 @@ export async function crearReceta(params: CrearRecetaParams): Promise<Receta> {
   return result.rows[0];
 }
 
-export async function buscarRecetaPorIdCorto(id_corto: string): Promise<Receta | null> {
-  const result = await pool.query<Receta>(
-    `SELECT ${RECETA_COLUMNS} FROM recetas WHERE id_corto = $1`,
+export async function buscarRecetaPorIdCorto(
+  id_corto: string,
+): Promise<(Receta & { nombre_medicamento?: string }) | null> {
+  const result = await pool.query<Receta & { nombre_medicamento?: string }>(
+    `SELECT ${RECETA_COLUMNS}, medicamentos_controlados.nombre AS nombre_medicamento
+     FROM recetas
+     LEFT JOIN medicamentos_controlados ON recetas.codigo_medicamento = medicamentos_controlados.codigo
+     WHERE recetas.id_corto = $1`,
     [id_corto],
   );
   return result.rows[0] ?? null;
 }
 
-export async function buscarRecetaPorIdCortoConWallet(id_corto: string): Promise<Receta | null> {
+export async function buscarRecetaPorIdCortoConWallet(
+  id_corto: string,
+): Promise<(Receta & { nombre_medicamento?: string }) | null> {
   // Mismo query que buscarRecetaPorIdCorto por ahora. Nombre separado a pedido del
   // plan (CONTEXTO.md, Camino A) para que el flujo de ver-receta (paciente, necesita
   // patient_wallet_address + commitment completos) y el de farmacia puedan divergir

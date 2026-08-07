@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { DbService } from '../services/db.service.js';
+import { buscarRecetaPorIdCorto } from '../services/db.service.js';
 import { ContractService } from '../services/contract.service.js';
 import { ValidarRecetaBody, ValidarRecetaResponse } from '../types/index.js';
 
@@ -19,7 +19,7 @@ export class FarmaciaController {
       }
 
       // 1. Buscar en Postgres
-      const receta = await DbService.obtenerRecetaPorIdCorto(id_corto_escaneado);
+      const receta = await buscarRecetaPorIdCorto(id_corto_escaneado);
 
       // Regla A: ¿Existe la receta en BD?
       if (!receta) {
@@ -50,7 +50,7 @@ export class FarmaciaController {
       }
 
       // 2. Verificar estado en Blockchain (Midnight ZK Mock)
-      const checkBlockchain = await ContractService.validarReceta(receta.commitment_hash);
+      const checkBlockchain = await ContractService.validarReceta(receta.commitment);
 
       if (!checkBlockchain.valido) {
         return res.status(200).json({
