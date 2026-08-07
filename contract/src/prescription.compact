@@ -69,3 +69,49 @@ constructor(doctorPublicKeys: Vector<5, Bytes<32>>) {
   validDoctors.insert(disclose(doctorPublicKeys[3]));
   validDoctors.insert(disclose(doctorPublicKeys[4]));
 }
+
+// ============================================================================
+// WITNESSES (private inputs — implemented in TypeScript, see src/witnesses.ts)
+// ============================================================================
+
+// The calling doctor's secret key. Supplied by the backend on behalf of
+// whichever doctor test-user is logged in. Compact has no wallet
+// msg.sender — identity is proven by hashing a secret the caller holds.
+witness doctorSecretKey(): Bytes<32>;
+
+// ============================================================================
+// CIRCUITS
+// ============================================================================
+
+// Called by the backend on behalf of a doctor to register a new
+// prescription. Stores the commitment publicly; the diagnosis and patient
+// identity that went into that commitment never appear here.
+export circuit registerPrescription(
+  commitment: Bytes<32>,
+  drugCode: Opaque<"string">,
+  expiryDate: Uint<64>
+): [] {
+  // 1. Caller must be one of the hardcoded valid doctors. `callerPk` is
+  //    derived from witness data, so both the intermediate value and the
+  //    assertion outcome need disclose() — the fact that the check passed
+  //    or failed is inherently observable on-chain (tx succeeds or reverts).
+  const callerPk = doctorPublicKey(doctorSecretKey());
+  assert(disclose(validDoctors.member(disclose(callerPk))), "Unauthorized doctor");
+
+  // 2. Expiry must be in the future. The standard library only exposes time
+  //    *comparisons* (blockTimeLt/Gte/...), not a raw "current time" getter.
+  assert(blockTimeLt(disclose(expiryDate)), "Invalid expiry date: must be in the future");
+
+  // 3. Don't silently clobber an existing prescription with the same
+  //    commitment (would only happen on an accidental resubmission/hash
+  //    collision, but it's a cheap, useful guard).
+  assert(!prescriptions.member(disclose(commitment)), "Prescription already registered");
+
+  // 4. Store it. Every circuit parameter is witness-shaped by default and
+  //    must be disclose()d before a ledger write — commitment/drugCode/
+  //    expiryDate are meant to be public here, so this is intentional.
+  prescriptions.insert(disclose(commitment), Prescription {
+    drugCode: disclose(drugCode),
+    expiryDate: disclose(expiryDate)
+  });
+}
