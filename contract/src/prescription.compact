@@ -1,0 +1,23 @@
+// prescription.compact
+// "Recetas Digitales para Viajeros" — Hack Buenos Aires (Midnight Network)
+//
+// A traveler's prescription is registered on-chain as an opaque commitment
+// (hash) by a doctor in a partner network, and later redeemed by a pharmacy
+// abroad without either party learning the patient's identity or diagnosis.
+// See ../CONTEXTO.md and ../tasks/zk/ for the full product/architecture context.
+
+pragma language_version >= 0.16;
+
+import CompactStandardLibrary;
+
+// ============================================================================
+// TYPES
+// ============================================================================
+
+// Public metadata stored per prescription. Keyed by commitment (a hash of
+// diagnosis + patient_id + a secret nonce, computed off-chain — this
+// contract never sees or recomputes it, only stores/looks up the result).
+export struct Prescription {
+  drugCode: Opaque<"string">,
+  expiryDate: Uint<64>, // unix seconds
+}
