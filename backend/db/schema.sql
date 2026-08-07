@@ -32,14 +32,20 @@ CREATE TABLE IF NOT EXISTS medicamentos_controlados (
 -- Metadata pública / no sensible de la receta (el diagnóstico e identidad del paciente NUNCA van acá)
 CREATE TABLE IF NOT EXISTS recetas (
     id_corto VARCHAR(20) PRIMARY KEY, -- El que se codifica en el QR (ej: "receta_a8f3")
-    commitment_hash TEXT NOT NULL,    -- Hash que se registra en el contrato Compact
+    commitment_hash TEXT NOT NULL,    -- Hash que se registra en el contrato Compact (tipo TS: `commitment`, mapear en la query)
     codigo_medicamento VARCHAR(20) NOT NULL REFERENCES medicamentos_controlados(codigo),
     fecha_vigencia DATE NOT NULL,
     medico_id UUID NOT NULL REFERENCES usuarios_prueba(id),
     usada BOOLEAN NOT NULL DEFAULT false,
     nullifier TEXT NULL UNIQUE,        -- Se completa al canjear en la blockchain
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    patient_wallet_address TEXT NOT NULL -- Wallet Lace del paciente (Holder Commitment); reemplaza login simulado
 );
+
+-- 5.1 Migración — Holder Commitment con Lace
+-- Para bases ya creadas antes de este cambio (CREATE TABLE de arriba no las toca por el IF NOT EXISTS).
+ALTER TABLE recetas
+    ADD COLUMN IF NOT EXISTS patient_wallet_address TEXT NOT NULL;
 
 -- 6. Índices para consultas rápidas del backend
 CREATE INDEX IF NOT EXISTS idx_recetas_medico ON recetas(medico_id);

@@ -1,0 +1,219 @@
+// prescription.compact
+// "Recetas Digitales para Viajeros" — Hack Buenos Aires (Midnight Network)
+//
+// A traveler's prescription is registered on-chain as an opaque commitment
+// (hash) by a doctor in a partner network, and later redeemed by a pharmacy
+// abroad without either party learning the patient's identity or diagnosis.
+// See ../CONTEXTO.md and ../tasks/zk/ for the full product/architecture context.
+
+pragma language_version >= 0.16;
+
+import CompactStandardLibrary;
+
+// ============================================================================
+// TYPES
+// ============================================================================
+
+// Public metadata stored per prescription. Keyed by commitment (a hash of
+// diagnosis + patient_id + a secret nonce, computed off-chain — this
+// contract never sees or recomputes it, only stores/looks up the result).
+export struct Prescription {
+  drugCode: Opaque<"string">,
+  expiryDate: Uint<64>, // unix seconds
+}
+
+// ============================================================================
+// LEDGER STATE (public)
+// ============================================================================
+
+// Registered prescriptions, keyed by their commitment hash.
+export ledger prescriptions: Map<Bytes<32>, Prescription>;
+
+// Nullifiers already redeemed by a pharmacy — prevents double-spend/reuse
+// of the same prescription. Dev-ZK-1 needs this for validatePrescription.
+export ledger usedNullifiers: Set<Bytes<32>>;
+
+// Hardcoded allowlist of valid doctors (test network for the hackathon).
+// Stores hash(secretKey), never the secret itself. `sealed` because the
+// list is fixed at deploy time — no admin add/remove circuit for this MVP.
+// Dev-ZK-1 needs this too, to check the doctor who registered a
+// prescription belongs to the same trusted set (if that check ends up
+// living in validatePrescription rather than only at registration).
+export sealed ledger validDoctors: Set<Bytes<32>>;
+
+// ============================================================================
+// DOMAIN-SEPARATED KEY DERIVATION
+// ============================================================================
+
+// `pure` + `export` so the backend can compute the exact same value
+// off-chain in TypeScript (via the generated `pureCircuits`) — e.g. to
+// derive a doctor's public key before deployment. See
+// scripts/derive-doctor-keys.ts.
+export pure circuit doctorPublicKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "rx0:doctor:pk:"), sk]);
+}
+
+// CRITICAL: uses a different domain separator than doctorPublicKey above,
+// so one can never be computed from the other. `export pure` so the
+// backend can precompute a nullifier off-chain (e.g. for the
+// `recetas.nullifier` bookkeeping column, CONTEXTO.md 5.3) without
+// spending a proof-generating circuit call.
+export pure circuit derivePrescriptionNullifier(commitment: Bytes<32>, nonce: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "rx0:nullifier:v1:"),
+    commitment,
+    nonce
+  ]);
+}
+
+// Holder commitment for the Lace patient-ownership flow (see
+// ../.claude/DIVISION-RESPONSABILIDADES.md section 4 — this exact name,
+// `deriveHolderCommitment`, is the fixed interface Backend depends on).
+// Uses its own domain separator, distinct from doctorPublicKey and
+// derivePrescriptionNullifier above, so none of the three can be computed
+// from each other. `export pure` so Backend calls this directly (no proof,
+// no wallet) to calculate `commitment` from the `nonce_paciente` it just
+// generated for the doctor's registration response.
+export pure circuit deriveHolderCommitment(nonce_paciente: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "rx0:holder:"), nonce_paciente]);
+}
+
+// ============================================================================
+// CONSTRUCTOR
+// ============================================================================
+
+// Takes the 5 doctor public keys (already hashed off-chain from each
+// doctor's own secret key — run `pnpm run derive-doctor-keys`). Compact
+// treats every circuit/constructor parameter as caller-supplied
+// (witness-shaped) data by default, so it must be disclose()d before it can
+// reach a ledger write — even though public keys aren't sensitive here.
+constructor(doctorPublicKeys: Vector<5, Bytes<32>>) {
+  validDoctors.insert(disclose(doctorPublicKeys[0]));
+  validDoctors.insert(disclose(doctorPublicKeys[1]));
+  validDoctors.insert(disclose(doctorPublicKeys[2]));
+  validDoctors.insert(disclose(doctorPublicKeys[3]));
+  validDoctors.insert(disclose(doctorPublicKeys[4]));
+}
+
+// ============================================================================
+// WITNESSES (private inputs — implemented in TypeScript, see src/witnesses.ts)
+// ============================================================================
+
+// The calling doctor's secret key. Supplied by the backend on behalf of
+// whichever doctor test-user is logged in. Compact has no wallet
+// msg.sender — identity is proven by hashing a secret the caller holds.
+witness doctorSecretKey(): Bytes<32>;
+
+// The secret nonce tied to one specific prescription. Generated by the
+// backend at registration time and delivered to the patient (e.g. embedded
+// in the QR payload alongside the id_corto); the backend looks it up again
+// when the pharmacy scans the QR, and returns it here keyed by commitment.
+witness prescriptionNonce(commitment: Bytes<32>): Bytes<32>;
+
+// ============================================================================
+// CIRCUITS
+// ============================================================================
+
+// Called by the backend on behalf of a doctor to register a new
+// prescription. Stores the commitment publicly; the diagnosis and patient
+// identity that went into that commitment never appear here.
+export circuit registerPrescription(
+  commitment: Bytes<32>,
+  drugCode: Opaque<"string">,
+  expiryDate: Uint<64>
+): [] {
+  // 1. Caller must be one of the hardcoded valid doctors. `callerPk` is
+  //    derived from witness data, so both the intermediate value and the
+  //    assertion outcome need disclose() — the fact that the check passed
+  //    or failed is inherently observable on-chain (tx succeeds or reverts).
+  const callerPk = doctorPublicKey(doctorSecretKey());
+  assert(disclose(validDoctors.member(disclose(callerPk))), "Unauthorized doctor");
+
+  // 2. Expiry must be in the future. The standard library only exposes time
+  //    *comparisons* (blockTimeLt/Gte/...), not a raw "current time" getter.
+  assert(blockTimeLt(disclose(expiryDate)), "Invalid expiry date: must be in the future");
+
+  // 3. Don't silently clobber an existing prescription with the same
+  //    commitment (would only happen on an accidental resubmission/hash
+  //    collision, but it's a cheap, useful guard).
+  assert(!prescriptions.member(disclose(commitment)), "Prescription already registered");
+
+  // 4. Store it. Every circuit parameter is witness-shaped by default and
+  //    must be disclose()d before a ledger write — commitment/drugCode/
+  //    expiryDate are meant to be public here, so this is intentional.
+  prescriptions.insert(disclose(commitment), Prescription {
+    drugCode: disclose(drugCode),
+    expiryDate: disclose(expiryDate)
+  });
+}
+
+// Called by the backend on behalf of a pharmacy to redeem a prescription.
+// Proves the caller holds the secret nonce tied to `commitment` (i.e. that
+// this is a legitimate redemption, not a guess), checks the prescription
+// hasn't expired or already been used, and marks it used. The nullifier is
+// NOT a caller-supplied argument — accepting one directly would let anyone
+// submit any nullifier for any commitment. It's derived inside the circuit
+// from the public commitment plus the witness-supplied secret nonce, so
+// redeeming requires actually holding that secret.
+export circuit validatePrescription(
+  commitment: Bytes<32>,
+  drugCode: Opaque<"string">
+): [] {
+  // 1. Prescription must exist. `commitment` is a circuit parameter, so
+  //    it's witness-shaped by default and must be disclose()d before the
+  //    ledger membership check can use it.
+  assert(prescriptions.member(disclose(commitment)), "Prescription not found");
+  const record = prescriptions.lookup(disclose(commitment));
+
+  // 2. Drug code must match what the doctor originally registered. The
+  //    comparison result gates whether the transaction succeeds, so it
+  //    must be disclosed.
+  assert(disclose(record.drugCode == drugCode), "Drug code mismatch");
+
+  // 3. Must not be expired. record.expiryDate came from the ledger (already
+  //    public), so no disclose() needed on it.
+  assert(blockTimeLt(record.expiryDate), "Prescription expired");
+
+  // 4. Derive this prescription's nullifier from the (public) commitment
+  //    and the (witness) nonce, then enforce single-use. nonce is witness
+  //    data, so the derived nullifier and the membership check are both
+  //    tainted and require disclose() before they can affect public
+  //    ledger state.
+  const nonce = prescriptionNonce(disclose(commitment));
+  const nullifier = derivePrescriptionNullifier(disclose(commitment), nonce);
+  assert(disclose(!usedNullifiers.member(disclose(nullifier))), "Prescription already used");
+  usedNullifiers.insert(disclose(nullifier));
+}
+
+// Patient-side proof of ownership, generated in the browser by Lace — not
+// called by the backend on anyone's behalf, unlike the two circuits above.
+// Proves the caller knows the `nonce_paciente` behind a `commitment` the
+// backend already has on file, WITHOUT revealing the nonce: `commitment`
+// only ever needs to be disclosed to compare against the caller's derived
+// value; `nonce_paciente` itself never appears in a ledger op, a return
+// value, or a disclose() call, so it never becomes part of the public
+// transcript.
+//
+// IMPORTANT: this circuit reads `prescriptions` (checking the commitment
+// is actually a registered prescription, not an arbitrary hash someone
+// made up) for two reasons — it's a useful check on its own, and it's
+// also what makes the compiler classify this as a regular (proof-
+// generating) circuit instead of `pure`. A circuit that touches no ledger
+// state and calls no witness gets auto-classified `pure` by the compiler
+// regardless of the `pure` keyword being present, and `pure` circuits run
+// locally with NO proof generated at all — which would silently break the
+// entire point of this circuit (Lace needs to hand the backend a real,
+// verifiable proof). The ledger read costs nothing privacy-wise:
+// `commitment` already has to be disclosed for the equality check below.
+//
+// Naming is fixed per DIVISION-RESPONSABILIDADES.md section 4 — Frontend
+// calls this exact circuit name with these exact parameter names.
+export circuit provePatientOwnership(
+  commitment: Bytes<32>,      // public: what the backend has stored
+  nonce_paciente: Bytes<32>   // private: only the patient knows this
+): [] {
+  assert(prescriptions.member(disclose(commitment)), "Prescription not found");
+
+  const derived = deriveHolderCommitment(nonce_paciente);
+  assert(disclose(derived == commitment), "Invalid prescription holder");
+}

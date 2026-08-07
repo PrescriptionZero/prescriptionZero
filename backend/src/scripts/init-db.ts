@@ -1,64 +1,19 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { pool } from '../config/db.js';
+
+// Relativo a process.cwd(): igual que env.ts (dotenv.config()), asume que el
+// script se corre desde backend/ (ej. `npm run db:init`).
+const schemaPath = join(process.cwd(), 'db/schema.sql');
 
 async function initDb() {
   console.log('🚀 Iniciando configuración de la Base de Datos...');
 
   try {
-    // 1. Crear extensión para UUIDs
-    await pool.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
-
-    // 2. Crear Enum para Roles
-    await pool.query(`
-      DO $$ BEGIN
-        CREATE TYPE rol_usuario AS ENUM ('medico', 'paciente', 'farmacia');
-      EXCEPTION
-        WHEN duplicate_object THEN null;
-      END $$;
-    `);
-
-    // 3. Crear Tabla: usuarios_prueba
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS usuarios_prueba (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        nombre VARCHAR(100) NOT NULL,
-        rol rol_usuario NOT NULL,
-        matricula VARCHAR(50) NULL,
-        pais VARCHAR(50) NULL,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-    // 4. Crear Tabla: medicamentos_controlados
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS medicamentos_controlados (
-        codigo VARCHAR(20) PRIMARY KEY,
-        nombre VARCHAR(100) NOT NULL,
-        requiere_receta BOOLEAN NOT NULL DEFAULT true,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-    // 5. Crear Tabla: recetas
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS recetas (
-        id_corto VARCHAR(20) PRIMARY KEY,
-        commitment_hash TEXT NOT NULL,
-        codigo_medicamento VARCHAR(20) NOT NULL REFERENCES medicamentos_controlados(codigo),
-        fecha_vigencia DATE NOT NULL,
-        medico_id UUID NOT NULL REFERENCES usuarios_prueba(id),
-        usada BOOLEAN NOT NULL DEFAULT false,
-        nullifier TEXT NULL UNIQUE,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-    // 6. Crear Índices
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_recetas_medico ON recetas(medico_id);
-      CREATE INDEX IF NOT EXISTS idx_recetas_usada ON recetas(usada);
-    `);
-
-    console.log('✅ Tablas e índices creados con éxito.');
+    // 1-6. Extensión, enum, tablas, migraciones e índices — leídos directo de schema.sql
+    const schemaSql = readFileSync(schemaPath, 'utf-8');
+    await pool.query(schemaSql);
+    console.log('✅ Tablas e índices creados con éxito (desde schema.sql).');
 
     // 7. Insertar Datos Semilla (Seeders)
     console.log('🌱 Insertando datos iniciales...');
