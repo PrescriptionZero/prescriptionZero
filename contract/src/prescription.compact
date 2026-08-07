@@ -21,3 +21,51 @@ export struct Prescription {
   drugCode: Opaque<"string">,
   expiryDate: Uint<64>, // unix seconds
 }
+
+// ============================================================================
+// LEDGER STATE (public)
+// ============================================================================
+
+// Registered prescriptions, keyed by their commitment hash.
+export ledger prescriptions: Map<Bytes<32>, Prescription>;
+
+// Nullifiers already redeemed by a pharmacy — prevents double-spend/reuse
+// of the same prescription. Dev-ZK-1 needs this for validatePrescription.
+export ledger usedNullifiers: Set<Bytes<32>>;
+
+// Hardcoded allowlist of valid doctors (test network for the hackathon).
+// Stores hash(secretKey), never the secret itself. `sealed` because the
+// list is fixed at deploy time — no admin add/remove circuit for this MVP.
+// Dev-ZK-1 needs this too, to check the doctor who registered a
+// prescription belongs to the same trusted set (if that check ends up
+// living in validatePrescription rather than only at registration).
+export sealed ledger validDoctors: Set<Bytes<32>>;
+
+// ============================================================================
+// DOMAIN-SEPARATED KEY DERIVATION
+// ============================================================================
+
+// `pure` + `export` so the backend can compute the exact same value
+// off-chain in TypeScript (via the generated `pureCircuits`) — e.g. to
+// derive a doctor's public key before deployment. See
+// scripts/derive-doctor-keys.ts.
+export pure circuit doctorPublicKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "rx0:doctor:pk:"), sk]);
+}
+
+// ============================================================================
+// CONSTRUCTOR
+// ============================================================================
+
+// Takes the 5 doctor public keys (already hashed off-chain from each
+// doctor's own secret key — run `pnpm run derive-doctor-keys`). Compact
+// treats every circuit/constructor parameter as caller-supplied
+// (witness-shaped) data by default, so it must be disclose()d before it can
+// reach a ledger write — even though public keys aren't sensitive here.
+constructor(doctorPublicKeys: Vector<5, Bytes<32>>) {
+  validDoctors.insert(disclose(doctorPublicKeys[0]));
+  validDoctors.insert(disclose(doctorPublicKeys[1]));
+  validDoctors.insert(disclose(doctorPublicKeys[2]));
+  validDoctors.insert(disclose(doctorPublicKeys[3]));
+  validDoctors.insert(disclose(doctorPublicKeys[4]));
+}
