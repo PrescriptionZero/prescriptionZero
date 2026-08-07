@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/
+*.log
+
+# Build Outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Compact & Midnight Generated Files
+# Mantenemos las carpetas pero ignoramos los artefactos pesados o autogenerados
+contract/managed/
+contract/build/
+*.bincode
+*.pk
+*.vk
+
+# Environment & Local Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Agent & IDE Configurations
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+.idea/
+*.swp
+*.swo
+
+# Docker & Local Runtime Logs
+.docker/
+docker-volumes/
+
+# OS System Files
+.DS_Store
+Thumbs.db
