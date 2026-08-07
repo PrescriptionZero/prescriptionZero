@@ -7,17 +7,16 @@ without either side ever learning the patient's diagnosis or identity. See
 `../CONTEXTO.md` for the full product/architecture context.
 
 Status: **compiles cleanly** with `compact 0.5.1` (language `>= 0.16`,
-runtime `0.16.0`). No warnings. **10/10 tests passing** (real, run via
+runtime `0.16.0`). No warnings. **14/14 tests passing** (real, run via
 `@midnight-ntwrk/compact-runtime`'s in-memory simulation — no proof server
 or devnet required).
 
-> **Scope note**: `../tasks/zk/` splits this contract into Camino A
-> (struct + doctors + `registerPrescription`, Dev-ZK-2) and Camino B
-> (nullifier + `validatePrescription`, Dev-ZK-1). This file/branch
-> implements **both** end to end, solo — see the PR history on
-> `compact/prescription-contract` for the incremental build. Coordinate with
-> Dev-ZK-1 before merging so her in-progress work isn't duplicated or
-> conflicted.
+> **Interface contract**: `../.claude/DIVISION-RESPONSABILIDADES.md` is the
+> source of truth for the exact circuit/field names Backend and Frontend
+> depend on (`provePatientOwnership`, `nonce_paciente`,
+> `deriveHolderCommitment`, the request/response shapes). If any signature
+> here changes, that document and both other teams need to know before
+> merging, not after.
 
 ## 1. Directory layout
 
@@ -29,7 +28,7 @@ contract/
 ├── scripts/
 │   └── derive-doctor-keys.ts  # generates the 5 demo doctor identities
 ├── test/
-│   └── prescription.test.ts   # 10 tests: unit-style + full E2E scenario
+│   └── prescription.test.ts   # 14 tests: unit-style + full E2E scenario + Lace ownership proof
 ├── managed/prescription/      # compiler output (gitignored — regenerate with `npm run compile`)
 └── package.json
 ```
@@ -92,11 +91,37 @@ rejects if that nullifier was already used, then marks it used. A second call
 with the same commitment/nonce always fails on this last check — that's the
 double-spend / "already used" demo moment.
 
+```
+export circuit provePatientOwnership(
+  commitment: Bytes<32>,      // public: what Backend has stored
+  nonce_paciente: Bytes<32>   // private: only the patient knows this
+): []
+```
+The Lace patient-privacy flow (`../.claude/DIVISION-RESPONSABILIDADES.md`
+§4, fixed naming — Frontend calls this exact circuit with these exact
+parameter names). Called from the patient's browser via Lace, not by the
+backend on anyone's behalf. Checks `commitment` is an actual registered
+prescription, then re-derives `deriveHolderCommitment(nonce_paciente)` and
+asserts it matches — proving the caller knows the nonce without ever
+disclosing it. `nonce_paciente` never appears in a ledger op, a return
+value, or a `disclose()` call, so it never enters the public transcript.
+
+**Note on this circuit's `pure` classification**: Compact auto-classifies a
+circuit as `pure` (runs locally, produces **no proof at all**) whenever it
+touches no ledger state and calls no witness — regardless of whether you
+wrote the `pure` keyword. An earlier version of this circuit had no ledger
+read and got silently auto-classified `pure`, which would have made it
+unusable for its actual purpose (Lace needs a real submittable proof for
+the backend to verify). The `prescriptions.member(commitment)` check is
+what keeps it a real, proof-generating circuit — see the comment in
+`prescription.compact` above the circuit definition.
+
 **Pure helpers (exported so TypeScript can call them directly, no proof
 needed):**
 
 - `doctorPublicKey(sk: Bytes<32>): Bytes<32>` — used by `scripts/derive-doctor-keys.ts` to compute the constructor args, and by the contract itself.
 - `derivePrescriptionNullifier(commitment: Bytes<32>, nonce: Bytes<32>): Bytes<32>` — lets the backend precompute a nullifier off-chain (e.g. to fill the `recetas.nullifier` column, CONTEXTO.md §5.3) without spending a proof.
+- `deriveHolderCommitment(nonce_paciente: Bytes<32>): Bytes<32>` — **Backend calls this exact function** (per DIVISION-RESPONSABILIDADES.md §4) when a doctor registers a prescription: generate a random `nonce_paciente`, call this to get `commitment`, store `commitment` in Postgres, return `{ id_corto, nonce_paciente, commitment }` to the doctor. No proof needed — it's a pure function.
 
 ## 4. Compile / typecheck / test
 
@@ -105,7 +130,7 @@ cd contract
 npm install
 npm run compile      # compact compile src/prescription.compact managed/prescription
 npm run typecheck    # tsc --noEmit
-npm test             # vitest run — 10/10 passing
+npm test             # vitest run — 14/14 passing
 ```
 
 `managed/` and `node_modules/` are gitignored — regenerate/reinstall before
@@ -170,6 +195,13 @@ Per CONTEXTO.md §5.5, the backend's `contract.service.ts` is the bridge:
   `validatePrescription(commitment, drugCode)`. On success, optionally call
   `pureCircuits.derivePrescriptionNullifier(commitment, nonce)` locally to
   fill `recetas.nullifier` — no extra proof needed, it's a pure function.
+- **`POST /api/paciente/ver-receta/:id_corto`** (Lace flow, see
+  DIVISION-RESPONSABILIDADES.md §2): receives `{ walletAddress, proof }`
+  where `proof` was generated client-side by Frontend/Lace calling
+  `provePatientOwnership(commitment, nonce_paciente)`. Backend verifies
+  `patient_wallet_address` in Postgres matches `walletAddress`, then
+  verifies the proof against the stored `commitment`. Valid → return
+  `{ drugCode, expiryDate }`; invalid → `403` with no further detail.
 - **No native events**: Compact has no `emit`. Subscribe to the indexer's
   `contractActions` for this contract address, or poll `queryContractState`
   + `ledger(state)` after submitting.
@@ -184,5 +216,8 @@ Per CONTEXTO.md §5.5, the backend's `contract.service.ts` is the bridge:
 - [x] Expiry validation works — tested both directions (future accepted, past/simulated-future rejected)
 - [x] Nullifier derived correctly and prevents reuse — tested (the double-spend "wow" moment)
 - [x] E2E test: register → validate (OK) → validate (REJECT), all 3 steps verified
+- [x] `provePatientOwnership` added, compiles as a real (non-`pure`) proof-generating circuit
+- [x] Correct `nonce_paciente` accepted, wrong nonce rejected, unregistered commitment rejected, nonce never touches the ledger — all tested
+- [x] `deriveHolderCommitment` helper added for Backend
 - [ ] Live test against a deployed contract on a running devnet (needs `docker compose up` for a full node/indexer stack — only the proof server container was available in this session)
 - [ ] Backend `contract.service.ts` itself (see §6 for what it needs to do; not built in this session)
