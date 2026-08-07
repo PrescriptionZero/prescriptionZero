@@ -217,3 +217,45 @@ describe('validatePrescription + nullifier (PR4)', () => {
     );
   });
 });
+
+// ============================================================================
+// PR5: End-to-end integration test
+// ============================================================================
+// The full demo workflow in one place, narrated step by step: doctor
+// registers → pharmacy redeems once (OK) → pharmacy tries to redeem the
+// same QR again (REJECTED). This is the hackathon's "wow moment" — the
+// nullifier blocking reuse — exercised as a single realistic scenario
+// rather than isolated unit checks.
+describe('End-to-end: register → validate (1x OK) → validate (2x REJECT)', () => {
+  it('runs the full doctor → patient → pharmacy workflow correctly', () => {
+    const [drGarcia, draFernandez, drLopez, draMartinez, drRodriguez] = makeDoctorKeys(5);
+    const sim = new Sim([drGarcia!, draFernandez!, drLopez!, draMartinez!, drRodriguez!]);
+
+    // --- Setup: what the backend would compute at registration time ---
+    // commitment = hash(diagnosis + patient_id + secret_nonce), computed
+    // off-chain — this contract never sees diagnosis/patient_id, only the
+    // resulting 32 bytes.
+    const commitment = randomBytes(32);
+    const nonce = randomBytes(32); // delivered to the patient via the QR payload
+    const drugCode = 'IBU400';
+    const expiryDate = BigInt(Math.floor(Date.now() / 1000) + 86_400); // +1 day
+
+    // --- Step 1: Dr. García registers the prescription ---
+    sim.as(drGarcia!).registerPrescription(commitment, drugCode, expiryDate);
+    expect(sim.led().prescriptions.member(commitment)).toBe(true);
+    const stored = sim.led().prescriptions.lookup(commitment);
+    expect(stored.drugCode).toEqual(drugCode);
+    expect(stored.expiryDate).toEqual(expiryDate);
+
+    // --- Step 2: Pharmacy scans the QR and validates (first time) ---
+    sim.withNonce(commitment, nonce);
+    expect(() => sim.validatePrescription(commitment, drugCode)).not.toThrow();
+    const nullifier = pureCircuits.derivePrescriptionNullifier(commitment, nonce);
+    expect(sim.led().usedNullifiers.member(nullifier)).toBe(true);
+
+    // --- Step 3: A second pharmacy scans the *same* QR again ---
+    expect(() => sim.validatePrescription(commitment, drugCode)).toThrow(
+      'Prescription already used',
+    );
+  });
+});
