@@ -98,6 +98,14 @@ class Sim {
     return r.result as [];
   }
 
+  provePatientOwnership(commitment: Uint8Array, noncePaciente: Uint8Array): [] {
+    this.contract.witnesses = this.witnessesFor();
+    const ctx = createCircuitContext(ADDR, COIN_PK, this.state, {});
+    const r = this.contract.circuits.provePatientOwnership(ctx, commitment, noncePaciente);
+    this.state = r.context.currentQueryContext.state;
+    return r.result as [];
+  }
+
   led() {
     return ledger(this.state);
   }
@@ -257,5 +265,59 @@ describe('End-to-end: register → validate (1x OK) → validate (2x REJECT)', (
     expect(() => sim.validatePrescription(commitment, drugCode)).toThrow(
       'Prescription already used',
     );
+  });
+});
+
+// ============================================================================
+// provePatientOwnership (Lace patient-privacy flow — see
+// ../.claude/DIVISION-RESPONSABILIDADES.md section 4)
+// ============================================================================
+describe('provePatientOwnership', () => {
+  function registeredPrescription() {
+    const [doctor1, doctor2, doctor3, doctor4, doctor5] = makeDoctorKeys(5);
+    const sim = new Sim([doctor1!, doctor2!, doctor3!, doctor4!, doctor5!]);
+    const noncePaciente = randomBytes(32);
+    // deriveHolderCommitment is what Backend calls off-chain to compute the
+    // commitment it stores alongside the prescription (see
+    // scripts/derive-doctor-keys.ts for the analogous doctor-key pattern).
+    const commitment = pureCircuits.deriveHolderCommitment(noncePaciente);
+    const expiryDate = BigInt(Math.floor(Date.now() / 1000) + 86_400);
+    sim.as(doctor1!).registerPrescription(commitment, 'IBU400', expiryDate);
+    return { sim, commitment, noncePaciente };
+  }
+
+  it('succeeds when the caller supplies the correct nonce_paciente', () => {
+    const { sim, commitment, noncePaciente } = registeredPrescription();
+    expect(() => sim.provePatientOwnership(commitment, noncePaciente)).not.toThrow();
+  });
+
+  it('fails when the caller supplies the wrong nonce_paciente', () => {
+    const { sim, commitment } = registeredPrescription();
+    const wrongNonce = randomBytes(32);
+    expect(() => sim.provePatientOwnership(commitment, wrongNonce)).toThrow(
+      'Invalid prescription holder',
+    );
+  });
+
+  it('fails for a commitment that was never registered', () => {
+    const [doctor1, doctor2, doctor3, doctor4, doctor5] = makeDoctorKeys(5);
+    const sim = new Sim([doctor1!, doctor2!, doctor3!, doctor4!, doctor5!]);
+    const noncePaciente = randomBytes(32);
+    const unregisteredCommitment = pureCircuits.deriveHolderCommitment(noncePaciente);
+    expect(() => sim.provePatientOwnership(unregisteredCommitment, noncePaciente)).toThrow(
+      'Prescription not found',
+    );
+  });
+
+  it('does not reveal nonce_paciente through the ledger', () => {
+    // The only ledger write provePatientOwnership could possibly cause is
+    // none at all (it has no .insert()/assignment) — this test documents
+    // that guarantee: the ledger's prescriptions entry is untouched by the
+    // call, so nothing about the nonce ever reaches public state.
+    const { sim, commitment, noncePaciente } = registeredPrescription();
+    const before = sim.led().prescriptions.lookup(commitment);
+    sim.provePatientOwnership(commitment, noncePaciente);
+    const after = sim.led().prescriptions.lookup(commitment);
+    expect(after).toEqual(before);
   });
 });
