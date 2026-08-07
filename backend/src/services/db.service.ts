@@ -14,6 +14,7 @@ const RECETA_COLUMNS = `
   recetas.patient_wallet_address,
   recetas.usada,
   recetas.nullifier,
+  recetas.prescription_nonce,
   recetas.created_at
 `;
 
@@ -24,16 +25,24 @@ export interface CrearRecetaParams {
   fecha_vigencia: string;
   medico_id: string;
   patient_wallet_address: string;
+  prescription_nonce: string;
 }
 
 export async function crearReceta(params: CrearRecetaParams): Promise<Receta> {
-  const { id_corto, commitment, codigo_medicamento, fecha_vigencia, medico_id, patient_wallet_address } =
-    params;
+  const {
+    id_corto,
+    commitment,
+    codigo_medicamento,
+    fecha_vigencia,
+    medico_id,
+    patient_wallet_address,
+    prescription_nonce,
+  } = params;
   const result = await pool.query<Receta>(
-    `INSERT INTO recetas (id_corto, commitment_hash, codigo_medicamento, fecha_vigencia, medico_id, patient_wallet_address)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO recetas (id_corto, commitment_hash, codigo_medicamento, fecha_vigencia, medico_id, patient_wallet_address, prescription_nonce)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING ${RECETA_COLUMNS}`,
-    [id_corto, commitment, codigo_medicamento, fecha_vigencia, medico_id, patient_wallet_address],
+    [id_corto, commitment, codigo_medicamento, fecha_vigencia, medico_id, patient_wallet_address, prescription_nonce],
   );
   return result.rows[0];
 }

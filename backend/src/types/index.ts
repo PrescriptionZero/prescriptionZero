@@ -34,6 +34,9 @@ export interface Receta {
   patient_wallet_address: string; // wallet Lace del paciente
   usada: boolean;
   nullifier: string | null;
+  // Secreto interno del backend para derivePrescriptionNullifier — NO es
+  // nonce_paciente (ese nunca se persiste, ver CrearRecetaResponse abajo).
+  prescription_nonce: string | null;
   created_at: string;
 }
 

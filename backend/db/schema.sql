@@ -39,13 +39,23 @@ CREATE TABLE IF NOT EXISTS recetas (
     usada BOOLEAN NOT NULL DEFAULT false,
     nullifier TEXT NULL UNIQUE,        -- Se completa al canjear en la blockchain
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    patient_wallet_address TEXT NOT NULL -- Wallet Lace del paciente (Holder Commitment); reemplaza login simulado
+    patient_wallet_address TEXT NOT NULL, -- Wallet Lace del paciente (Holder Commitment); reemplaza login simulado
+    prescription_nonce TEXT NULL -- secreto interno para el nullifier de validatePrescription (NO es nonce_paciente, ver 5.2 abajo)
 );
 
 -- 5.1 Migración — Holder Commitment con Lace
 -- Para bases ya creadas antes de este cambio (CREATE TABLE de arriba no las toca por el IF NOT EXISTS).
 ALTER TABLE recetas
     ADD COLUMN IF NOT EXISTS patient_wallet_address TEXT NOT NULL;
+
+-- 5.2 Migración — nonce del circuito validatePrescription (contract/src/prescription.compact)
+-- IMPORTANTE: esto NO es nonce_paciente (el secreto del paciente para provePatientOwnership,
+-- que el backend nunca persiste, ver DIVISION-RESPONSABILIDADES.md sección 2). Es un secreto
+-- interno del backend, generado en el registro y reutilizado únicamente para derivar el
+-- nullifier cuando la farmacia valida — el propio contrato ya lo daba por sentado (ver el
+-- comentario de `witness prescriptionNonce` en prescription.compact).
+ALTER TABLE recetas
+    ADD COLUMN IF NOT EXISTS prescription_nonce TEXT NULL;
 
 -- 6. Índices para consultas rápidas del backend
 CREATE INDEX IF NOT EXISTS idx_recetas_medico ON recetas(medico_id);

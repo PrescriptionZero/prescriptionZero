@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { buscarRecetaPorIdCorto } from '../services/db.service.js';
+import { buscarRecetaPorIdCorto, marcarRecetaComoUsada } from '../services/db.service.js';
 import { ContractService } from '../services/contract.service.js';
 import { ValidarRecetaBody, ValidarRecetaResponse } from '../types/index.js';
 
@@ -59,7 +59,24 @@ export class FarmaciaController {
         });
       }
 
-      // 3. Respuesta Exitosa (Sin datos del paciente ni del médico)
+      // 3. Derivar el nullifier real (derivePrescriptionNullifier del
+      //    contrato compilado) y marcar como usada ANTES de responder, para
+      //    que un segundo escaneo del mismo id_corto encuentre usada = true
+      //    en la Regla B de arriba.
+      if (!receta.prescription_nonce) {
+        console.error(`❌ Receta ${id_corto_escaneado} no tiene prescription_nonce — no se puede derivar el nullifier`);
+        return res.status(500).json({
+          valido: false,
+          motivo: 'Error interno: receta sin nonce registrado',
+        });
+      }
+      const nullifier = ContractService.derivePrescriptionNullifier(
+        receta.commitment,
+        receta.prescription_nonce,
+      );
+      await marcarRecetaComoUsada(id_corto_escaneado, nullifier);
+
+      // 4. Respuesta Exitosa (Sin datos del paciente ni del médico)
       return res.status(200).json({
         valido: true,
         medicamento: receta.nombre_medicamento || receta.codigo_medicamento,

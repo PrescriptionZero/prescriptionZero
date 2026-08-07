@@ -1,6 +1,7 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { crearReceta } from '../services/db.service.js';
+import { ContractService } from '../services/contract.service.js';
 import type { CrearRecetaRequest, CrearRecetaResponse } from '../types/index.js';
 
 function generarIdCorto(): string {
@@ -23,8 +24,14 @@ export async function crearRecetaController(req: Request, res: Response): Promis
     const idCorto = generarIdCorto();
     const noncePaciente = randomBytes(32).toString('hex');
 
-    // TODO: usar contract.service.deriveHolderCommitment cuando Dev-BE-2 lo suba
-    const commitment = createHash('sha256').update(noncePaciente).digest('hex');
+    // REAL: pureCircuits.deriveHolderCommitment del contrato compilado — el
+    // mismo valor que provePatientOwnership va a verificar más tarde.
+    const commitment = ContractService.deriveHolderCommitment(noncePaciente);
+
+    // Distinto secreto, distinto propósito: éste sí lo guarda el backend,
+    // solo para derivar el nullifier cuando la farmacia valide (ver
+    // schema.sql 5.2 y el comentario en contract.service.ts).
+    const prescriptionNonce = ContractService.generatePrescriptionNonce();
 
     await crearReceta({
       id_corto: idCorto,
@@ -33,6 +40,7 @@ export async function crearRecetaController(req: Request, res: Response): Promis
       fecha_vigencia: expiryDate,
       medico_id: medicoId,
       patient_wallet_address: patientWalletAddress,
+      prescription_nonce: prescriptionNonce,
     });
 
     // El nonce se devuelve UNA vez, acá, y nunca se persiste en la base.
