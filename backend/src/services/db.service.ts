@@ -78,10 +78,12 @@ export interface RecetaListItem {
 }
 
 export async function listarRecetasPorWallet(walletAddress: string): Promise<RecetaListItem[]> {
+  // Solo recetas vigentes (usada = false) — una vez dispensada por la
+  // farmacia, deja de aparecer en la lista del paciente (feature/autorefresh-recetas).
   const result = await pool.query<RecetaListItem>(
     `SELECT id_corto, codigo_medicamento, fecha_vigencia, usada
      FROM recetas
-     WHERE patient_wallet_address = $1
+     WHERE patient_wallet_address = $1 AND usada = false
      ORDER BY created_at DESC`,
     [walletAddress],
   );

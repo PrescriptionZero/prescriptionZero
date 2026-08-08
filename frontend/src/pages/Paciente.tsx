@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   MapPin, Navigation, Clock, QrCode, AlertCircle, Loader2,
   ShieldCheck, X, Fingerprint, Bell, Activity,
-  Zap, ChevronRight, ScanLine, FileText, Store, Wallet, LockKeyhole
+  Zap, ChevronRight, ScanLine, FileText, Store, Wallet, LockKeyhole, RefreshCw
 } from 'lucide-react';
 import Button from '../components/ui/Button';
 import { listarMisRecetas, verReceta, generarQr, ApiError } from '../services/api';
@@ -47,15 +47,18 @@ export default function Paciente() {
   const [isLoading, setIsLoading] = useState(false);
   const [locError, setLocError] = useState('');
   
-  const [qrTimer, setQrTimer] = useState(299); 
+  const [qrTimer, setQrTimer] = useState(299);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const showingQR = Object.keys(generatedQRs).length > 0;
 
   // Timer logic for the QR
   useEffect(() => {
-    if (Object.keys(generatedQRs).length > 0) {
+    if (showingQR) {
       const interval = setInterval(() => setQrTimer(prev => (prev > 0 ? prev - 1 : 299)), 1000);
       return () => clearInterval(interval);
     }
-  }, [generatedQRs]);
+  }, [showingQR]);
 
   // FLOW 1: Connect Lace — real DApp Connector API call (useWalletConnection).
   // Errors (no wallet installed, user rejects, ...) surface via walletError.
@@ -89,6 +92,39 @@ export default function Paciente() {
       fetchMyPrescriptions(walletAddress);
     }
   }, [isConnected, walletAddress]);
+
+  // Auto-refresh (Option A): while at least one QR is on screen, poll the
+  // backend every 3s so a pharmacy validating the prescription elsewhere
+  // makes it disappear from this list almost immediately (backend now
+  // filters usada=false, see db.service.ts). showingQR is derived from
+  // generatedQRs above — nothing extra to keep in sync.
+  useEffect(() => {
+    if (!walletAddress || !showingQR) return;
+
+    const interval = setInterval(() => {
+      fetchMyPrescriptions(walletAddress);
+    }, 3000);
+
+    // Stop polling after 2 minutes even if a QR is still visible, so an
+    // abandoned tab doesn't hammer the backend forever.
+    const timeout = setTimeout(() => clearInterval(interval), 120_000);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [walletAddress, showingQR]);
+
+  // Manual refresh (Option B).
+  const handleRefreshRecetas = async () => {
+    if (!walletAddress) return;
+    setIsRefreshing(true);
+    try {
+      await fetchMyPrescriptions(walletAddress);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   // FLOW 3: View Details (ZK Proof with Lace) + FLOW 4: Generate Pharmacy QR
   const generateZKProof = async (prescription: PrescriptionCard) => {
@@ -342,7 +378,17 @@ export default function Paciente() {
                 <div className="animate-in fade-in slide-in-from-bottom-8 duration-500 space-y-5">
                   <div className="flex justify-between items-end px-1 mb-2">
                     <h2 className="text-sm font-black text-zinc-800 uppercase tracking-widest">Health Wallet</h2>
-                    <span className="text-xs text-zinc-400 font-medium flex items-center gap-1"><ShieldCheck className="w-3 h-3"/> Encrypted</span>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={handleRefreshRecetas}
+                        disabled={isRefreshing}
+                        className="text-xs text-indigo-600 font-bold flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed hover:text-indigo-700 transition-colors"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
+                        {isRefreshing ? 'Refreshing...' : 'Refresh'}
+                      </button>
+                      <span className="text-xs text-zinc-400 font-medium flex items-center gap-1"><ShieldCheck className="w-3 h-3"/> Encrypted</span>
+                    </div>
                   </div>
 
                   {backendPrescriptions.length === 0 && (
