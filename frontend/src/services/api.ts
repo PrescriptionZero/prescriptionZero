@@ -89,6 +89,17 @@ export function generarQr(idCorto: string): Promise<string> {
   }).then((data) => data.qr_data_url);
 }
 
+// --- GET /api/medicamentos ---
+
+export interface Medicamento {
+  codigo: string;
+  nombre: string;
+}
+
+export function listarMedicamentos(): Promise<Medicamento[]> {
+  return request('/medicamentos');
+}
+
 // --- POST /api/farmacia/validar ---
 
 export type ValidarRecetaResponse =

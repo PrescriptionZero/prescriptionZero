@@ -85,6 +85,13 @@ export interface GenerarQrResponse {
   qr_data_url: string;
 }
 
+// --- GET /api/medicamentos ---
+
+export type MedicamentosResponse = {
+  codigo: string;
+  nombre: string;
+}[];
+
 // --- POST /api/farmacia/validar (sin cambios) ---
 
 export interface ValidarRecetaBody {

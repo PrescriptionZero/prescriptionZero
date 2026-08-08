@@ -3,6 +3,7 @@ import express from 'express';
 import { env } from './config/env.js';
 import farmaciaRoutes from './routes/farmacia.routes.js';
 import healthRoutes from './routes/health.routes.js';
+import medicamentosRoutes from './routes/medicamentos.routes.js';
 import medicoRoutes from './routes/medico.routes.js';
 import pacienteRoutes from './routes/paciente.routes.js';
 
@@ -24,6 +25,9 @@ app.use('/api/paciente', pacienteRoutes);
 
 // Registramos las rutas de la farmacia
 app.use('/api/farmacia', farmaciaRoutes);
+
+// Registramos las rutas del catálogo de medicamentos
+app.use('/api/medicamentos', medicamentosRoutes);
 
 const PORT = Number(env.PORT);
 
