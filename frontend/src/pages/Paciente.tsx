@@ -1,16 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import QRCode from 'qrcode';
-import { 
-  MapPin, Navigation, Clock, QrCode, AlertCircle, Loader2, 
-  ShieldCheck, Pill, X, Fingerprint, Bell, Activity, 
-  Zap, CheckCircle2, ChevronRight, ScanLine, FileText, Store, Wallet, LockKeyhole
+import { useState, useEffect } from 'react';
+import {
+  MapPin, Navigation, Clock, QrCode, AlertCircle, Loader2,
+  ShieldCheck, X, Fingerprint, Bell, Activity,
+  Zap, ChevronRight, ScanLine, FileText, Store, Wallet, LockKeyhole
 } from 'lucide-react';
-import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
-
-// MOCK FOR LACE (Replace with your actual imports)
-// import { useWalletConnection } from "@midnight-ntwrk/midnight-js";
-// import { impureCircuits } from "../contracts/managed/prescription";
+import { listarMisRecetas, verReceta, generarQr, ApiError } from '../services/api';
+import { useWalletConnection } from '../hooks/useWalletConnection';
 
 interface Pharmacy {
   id: number;
@@ -20,16 +16,32 @@ interface Pharmacy {
   isOpen: boolean;
 }
 
+interface PrescriptionCard {
+  short_id: string;
+  drugCode: string;
+  expiryDate: string;
+  status: string;
+  theme: string;
+  icon: typeof Activity;
+}
+
 export default function Paciente() {
-  // --- LACE SIMULATED STATE ---
-  const [isConnected, setIsConnected] = useState(false);
-  const [walletAddress, setWalletAddress] = useState('');
-  
+  // --- LACE WALLET (real, via DApp Connector API) ---
+  const {
+    status: walletStatus,
+    isConnected,
+    isConnecting,
+    address: walletAddress,
+    error: walletError,
+    connect,
+  } = useWalletConnection();
+
   // --- APP STATE ---
-  const [backendPrescriptions, setBackendPrescriptions] = useState<any[]>([]);
+  const [backendPrescriptions, setBackendPrescriptions] = useState<PrescriptionCard[]>([]);
   const [generatedQRs, setGeneratedQRs] = useState<Record<string, string>>({});
   const [proofStatus, setProofStatus] = useState<Record<string, 'idle' | 'proving' | 'success'>>({});
-  
+  const [proofError, setProofError] = useState<Record<string, string>>({});
+
   const [activeTab, setActiveTab] = useState<'prescription' | 'pharmacies'>('prescription');
   const [pharmacies, setPharmacies] = useState<Pharmacy[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -45,65 +57,79 @@ export default function Paciente() {
     }
   }, [generatedQRs]);
 
-  // FLOW 1: Connect Lace
+  // FLOW 1: Connect Lace — real DApp Connector API call (useWalletConnection).
+  // Errors (no wallet installed, user rejects, ...) surface via walletError.
   const handleConnectLace = () => {
-    // Real implementation: await connect();
-    setTimeout(() => {
-      setWalletAddress('lace_1x9a...v4p2');
-      setIsConnected(true);
-      fetchMyPrescriptions();
-    }, 1500);
+    connect('preview').catch(() => {
+      // walletError already holds the message; nothing else to do here.
+    });
   };
 
   // FLOW 2: List Prescriptions (GET /api/paciente/mis-recetas)
-  const fetchMyPrescriptions = () => {
-    // Simulating backend response by reading what the Doctor left in localStorage (Option C)
-    const localPrescriptions = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith('zk_')) {
-        const data = JSON.parse(localStorage.getItem(key) || '{}');
-        localPrescriptions.push({
-          short_id: key.replace('zk_', ''),
-          drugCode: data.medicamento || 'Encrypted Drug', 
-          expiryDate: data.vigencia || 'N/A',
-          commitment: data.commitment,
-          patient_nonce: data.nonce,
-          status: "Authorized",
-          theme: "bg-gradient-to-br from-zinc-900 via-zinc-950 to-zinc-900",
-          icon: Activity
-        });
-      }
+  const fetchMyPrescriptions = async (wallet: string) => {
+    try {
+      const recetas = await listarMisRecetas(wallet);
+      setBackendPrescriptions(
+        recetas.map((r) => ({
+          short_id: r.id_corto,
+          drugCode: r.drugCode,
+          expiryDate: r.expiryDate,
+          status: 'Authorized',
+          theme: 'bg-gradient-to-br from-zinc-900 via-zinc-950 to-zinc-900',
+          icon: Activity,
+        })),
+      );
+    } catch (err) {
+      console.error('Failed to list prescriptions:', err);
     }
-    setBackendPrescriptions(localPrescriptions);
   };
 
-  // FLOW 3: View Details (ZK Proof with Lace)
-  const generateZKProof = async (prescription: any) => {
+  useEffect(() => {
+    if (isConnected && walletAddress) {
+      fetchMyPrescriptions(walletAddress);
+    }
+  }, [isConnected, walletAddress]);
+
+  // FLOW 3: View Details (ZK Proof with Lace) + FLOW 4: Generate Pharmacy QR
+  const generateZKProof = async (prescription: PrescriptionCard) => {
+    if (!walletAddress) return; // guarded by isConnected in the UI, but keep TS honest
+
     setProofStatus(prev => ({ ...prev, [prescription.short_id]: 'proving' }));
-    
+    setProofError(prev => ({ ...prev, [prescription.short_id]: '' }));
+
     try {
-      // 1. Call real Lace circuit here:
-      // const proof = await impureCircuits.provePatientOwnership(
-      //   prescription.commitment,
-      //   prescription.patient_nonce,
-      //   { signer: wallet }
-      // );
-      
-      // Simulate Lace popup delay
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      // 2. Send proof to Backend here:
-      // const res = await fetch(`/api/paciente/ver-receta/${prescription.short_id}`, { ... })
-      
-      // 3. Success: Generate Pharmacy QR
-      const url = await QRCode.toDataURL(prescription.short_id, { width: 300, margin: 1, color: { dark: '#09090b', light: '#ffffff' } });
-      
-      setGeneratedQRs(prev => ({ ...prev, [prescription.short_id]: url }));
+      // Wallet CONNECTION above is real (useWalletConnection, DApp Connector
+      // API). Proof generation is not — that additionally needs a contract
+      // actually deployed on-chain (CONTRACT_ADDRESS is still a placeholder
+      // in backend/.env), ZK assets hosted over HTTP, and the full
+      // midnight-js provider pipeline (.agents/skills/1am-wallet section 6-8).
+      // Once that exists, this becomes:
+      //   const noncePaciente = localStorage.getItem(`nonce_${prescription.short_id}`);
+      //   const callTxData = await createUnprovenCallTx(session.providers, {
+      //     compiledContract, contractAddress, circuitId: 'provePatientOwnership',
+      //     args: [commitmentBytes, noncePacienteBytes],
+      //   });
+      //   const proof = await submitTxAsync(session.providers, { unprovenTx: callTxData.private.unprovenTx });
+      // Until then: the backend's verificarProofPropiedad accepts any string
+      // except the literal "proof_invalida" (see backend/src/services/contract.service.ts).
+      const proof = 'mock-proof';
+
+      // 1. Backend verifies the proof against the stored commitment.
+      await verReceta(prescription.short_id, walletAddress, proof);
+
+      // 2. Success: ask the backend for the pharmacy-scannable QR.
+      const qrDataUrl = await generarQr(prescription.short_id);
+
+      setGeneratedQRs(prev => ({ ...prev, [prescription.short_id]: qrDataUrl }));
       setProofStatus(prev => ({ ...prev, [prescription.short_id]: 'success' }));
       setQrTimer(299);
     } catch (err) {
       console.error(err);
+      const message =
+        err instanceof ApiError && err.status === 403
+          ? "Unauthorized: this prescription doesn't belong to you"
+          : 'Could not verify this prescription. Try again.';
+      setProofError(prev => ({ ...prev, [prescription.short_id]: message }));
       setProofStatus(prev => ({ ...prev, [prescription.short_id]: 'idle' }));
     }
   };
@@ -202,16 +228,37 @@ export default function Paciente() {
               Connect your Lace wallet to generate zero-knowledge proofs and access your prescriptions.
             </p>
 
-            <button 
+            <button
               onClick={handleConnectLace}
-              className="group relative w-full overflow-hidden rounded-[1.5rem] bg-zinc-950 p-[1px] transition-transform active:scale-[0.98]"
+              disabled={isConnecting || walletStatus === 'not-found'}
+              className="group relative w-full overflow-hidden rounded-[1.5rem] bg-zinc-950 p-[1px] transition-transform active:scale-[0.98] disabled:opacity-60 disabled:active:scale-100"
             >
               <div className="absolute inset-0 bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-500 opacity-50 blur-sm group-hover:opacity-100 transition-opacity duration-500 animate-pulse"></div>
               <div className="relative flex w-full items-center justify-center gap-3 rounded-[23px] bg-zinc-950/90 px-4 py-5 text-sm font-bold text-white backdrop-blur-xl transition-colors group-hover:bg-zinc-900">
-                <LockKeyhole className="h-5 w-5 text-indigo-400" />
-                Connect Lace Wallet
+                {isConnecting ? (
+                  <>
+                    <Loader2 className="h-5 w-5 text-indigo-400 animate-spin" />
+                    Waiting for Lace authorization...
+                  </>
+                ) : (
+                  <>
+                    <LockKeyhole className="h-5 w-5 text-indigo-400" />
+                    Connect Lace Wallet
+                  </>
+                )}
               </div>
             </button>
+
+            {walletStatus === 'not-found' && (
+              <p className="mt-4 text-xs font-semibold text-amber-600 text-center max-w-xs">
+                No Midnight wallet extension detected. Install Lace and refresh this page.
+              </p>
+            )}
+            {walletError && (
+              <p className="mt-4 text-xs font-semibold text-rose-600 text-center max-w-xs">
+                {walletError}
+              </p>
+            )}
           </div>
         ) : (
           
@@ -368,8 +415,14 @@ export default function Paciente() {
                                   </>
                                 )}
                               </button>
-                            ) : (
-                              
+                            ) : null}
+                            {proofError[prescription.short_id] && (
+                              <p className="mt-3 text-xs font-semibold text-rose-400 text-center">
+                                {proofError[prescription.short_id]}
+                              </p>
+                            )}
+                            {proofStatus[prescription.short_id] === 'success' && (
+
                               /* POST-PROOF QR CODE */
                               <div className="w-full animate-in zoom-in-95 duration-300 bg-white rounded-[1.5rem] p-5 shadow-2xl relative overflow-hidden text-zinc-900 border border-zinc-100">
                                 

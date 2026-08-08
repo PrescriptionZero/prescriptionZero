@@ -1,15 +1,26 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Stethoscope, CheckCircle2, Fingerprint, RefreshCcw, 
-  ShieldCheck, Lock, Activity, Server, User, Calendar, Pill, Check, Loader2, FileSignature
+import {
+  Stethoscope, CheckCircle2, RefreshCcw,
+  ShieldCheck, Lock, Activity, Server, User, Calendar, Pill, Check, Loader2, FileSignature, Wallet
 } from 'lucide-react';
+import { crearReceta, ApiError } from '../services/api';
+
+// Seeded test doctor (backend/src/scripts/init-db.ts) — Dr. García.
+const MEDICO_ID = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
+
+// Demo wallet address — no real Lace connection is wired yet (see Home.tsx /
+// Paciente.tsx mocks), so doctor and patient share this literal so the
+// demo flow ties together end to end. Editable in the form below.
+const DEMO_WALLET_ADDRESS = 'lace_1x9a...v4p2';
 
 export default function Medico() {
   const [patient, setPatient] = useState('');
+  const [patientWalletAddress, setPatientWalletAddress] = useState(DEMO_WALLET_ADDRESS);
   const [drugCode, setDrugCode] = useState(''); // Ahora inicia vacío para que el médico escriba
   const [expiryDate, setExpiryDate] = useState('');
-  
+
   const [status, setStatus] = useState<'idle' | 'loading' | 'success'>('idle');
+  const [error, setError] = useState('');
   const [cryptoData, setCryptoData] = useState({ shortId: '', nonce: '', commitment: '' });
   
   const [loadingStep, setLoadingStep] = useState(0);
@@ -31,28 +42,32 @@ export default function Medico() {
     return () => clearInterval(interval);
   }, [status]);
 
-  const issuePrescription = (e: React.FormEvent) => {
+  const issuePrescription = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
     setStatus('loading');
 
-    // MOCK Backend response: POST /api/medico/recetas
-    setTimeout(() => {
-      const shortId = `rx_${Math.random().toString(36).substring(2, 8)}`;
-      const nonce = `nonce_${Math.random().toString(36).substring(2, 12)}`;
-      const commitment = `0x${Math.random().toString(16).substring(2, 16)}...${Math.random().toString(16).substring(2, 6)}`;
-      
-      setCryptoData({ shortId, nonce, commitment });
-      
-      // OPTION C: Save to localStorage so Patient.tsx can consume it
-      localStorage.setItem(`zk_${shortId}`, JSON.stringify({ 
-        nonce, 
-        commitment, 
-        medicamento: drugCode, // Guardamos lo que el médico tipeó
-        vigencia: expiryDate   
-      }));
+    try {
+      const { id_corto, nonce_paciente, commitment } = await crearReceta({
+        patientWalletAddress,
+        drugCode,
+        expiryDate, // already "YYYY-MM-DD" from <input type="date">
+        medicoId: MEDICO_ID,
+      });
+
+      setCryptoData({ shortId: id_corto, nonce: nonce_paciente, commitment });
+
+      // nonce_paciente is returned exactly once, right here — the backend
+      // never persists it (see backend/README.md section 5). Stash it
+      // locally so Paciente.tsx can use it once real proof generation via
+      // Lace is wired up.
+      localStorage.setItem(`nonce_${id_corto}`, nonce_paciente);
 
       setStatus('success');
-    }, 3500);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'No se pudo emitir la receta. Intentá de nuevo.');
+      setStatus('idle');
+    }
   };
 
   return (
@@ -177,7 +192,32 @@ export default function Medico() {
                           </div>
                         </div>
                       </div>
+
+                      <div className="group relative rounded-[1.5rem] bg-zinc-50/50 border border-zinc-200/80 p-4 transition-all duration-300 hover:bg-zinc-50 focus-within:bg-white focus-within:border-indigo-500 focus-within:ring-4 focus-within:ring-indigo-500/10 focus-within:shadow-sm">
+                        <div className="flex items-center gap-4">
+                          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[1rem] bg-white shadow-sm border border-zinc-100 group-focus-within:border-indigo-200 group-focus-within:bg-indigo-50 transition-colors duration-300">
+                            <Wallet className="h-5 w-5 text-zinc-400 group-focus-within:text-indigo-600" />
+                          </div>
+                          <div className="flex-1">
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 group-focus-within:text-indigo-600 transition-colors">Patient Lace Wallet Address</label>
+                            <input
+                              type="text"
+                              required
+                              value={patientWalletAddress}
+                              onChange={(e) => setPatientWalletAddress(e.target.value)}
+                              placeholder="lace_..."
+                              className="w-full bg-transparent p-0 text-sm font-bold text-zinc-900 focus:outline-none placeholder:text-zinc-300 placeholder:font-medium mt-1 font-mono"
+                            />
+                          </div>
+                        </div>
+                      </div>
                     </div>
+
+                    {error && (
+                      <div className="rounded-2xl bg-rose-50 border border-rose-200 px-4 py-3 text-sm font-semibold text-rose-700">
+                        {error}
+                      </div>
+                    )}
 
                     {/* SECTION 2: Clinical Details */}
                     <div className="space-y-3 pt-2">

@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { 
-  ShieldCheck, Wallet, ChevronRight, Activity, 
-  LockKeyhole, Server, Fingerprint, HelpCircle, 
+import {
+  ShieldCheck, Wallet, Activity,
+  LockKeyhole, Server, Fingerprint, HelpCircle,
   ChevronDown, Stethoscope, User, Store
 } from 'lucide-react';
 

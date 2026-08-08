@@ -1,34 +1,38 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
-import { 
-  Store, Camera, CheckCircle2, XCircle, ShieldAlert, 
-  FileText, RefreshCw, X, ShieldCheck, ScanLine, 
+import {
+  Store, Camera, CheckCircle2, XCircle, ShieldAlert,
+  FileText, RefreshCw, X, ShieldCheck, ScanLine,
   Activity, Lock
 } from 'lucide-react';
+import { validarReceta, ApiError } from '../services/api';
 
 export default function Farmacia() {
   const [isScanning, setIsScanning] = useState(false);
   const [validationResult, setValidationResult] = useState<'idle' | 'valid' | 'invalid'>('idle');
   const [message, setMessage] = useState('');
   const [medData, setMedData] = useState({ name: '', expiry: '' });
-  
-  const [usedHistory, setUsedHistory] = useState<string[]>([]);
 
-  const validatePrescription = (shortId: string, currentHistory: string[]) => {
-    if (!shortId) return;
+  // Backend is the source of truth for whether a receta was already used
+  // (usada flag + nullifier, see backend/README.md section 5) — no need to
+  // track scan history locally anymore.
+  const validatePrescription = async (idCortoEscaneado: string) => {
+    if (!idCortoEscaneado) return;
 
-    if (currentHistory.includes(shortId)) {
+    try {
+      const result = await validarReceta(idCortoEscaneado);
+      if (result.valido) {
+        setValidationResult('valid');
+        setMessage('ZK-Proof Authorized');
+        setMedData({ name: result.medicamento, expiry: result.vigente_hasta });
+      } else {
+        setValidationResult('invalid');
+        setMessage(result.motivo);
+        setMedData({ name: '', expiry: '' });
+      }
+    } catch (err) {
       setValidationResult('invalid');
-      setMessage('Transaction Rejected');
-      setMedData({ name: '', expiry: '' });
-    } else if (shortId.startsWith('rx_') || shortId === 'receta_a8f3' || shortId === '0x8f...3a9c (receta_a8f3)') {
-      setValidationResult('valid');
-      setMessage('ZK-Proof Authorized');
-      setMedData({ name: 'Ibuprofen 400mg', expiry: '15 Aug 2026' });
-      setUsedHistory(prev => [...prev, shortId]);
-    } else {
-      setValidationResult('invalid');
-      setMessage('Hash Not Found');
+      setMessage(err instanceof ApiError ? err.message : 'Connection error');
       setMedData({ name: '', expiry: '' });
     }
   };
@@ -49,7 +53,7 @@ export default function Farmacia() {
         (decodedText) => {
           html5QrCode.stop().then(() => {
             setIsScanning(false);
-            validatePrescription(decodedText, usedHistory);
+            validatePrescription(decodedText);
           }).catch(console.error);
         },
         () => {
