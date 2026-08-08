@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import {
   Stethoscope, CheckCircle2, RefreshCcw,
-  ShieldCheck, Lock, Activity, Server, User, Calendar, Pill, Check, Loader2, FileSignature, Wallet
+  ShieldCheck, Lock, Activity, Server, User, Calendar, Check, Loader2, FileSignature, Wallet, Search
 } from 'lucide-react';
-import { crearReceta, ApiError } from '../services/api';
+import { crearReceta, listarMedicamentos, ApiError, type Medicamento } from '../services/api';
 
 // Seeded test doctor (backend/src/scripts/init-db.ts) — Dr. García.
 const MEDICO_ID = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
@@ -16,12 +16,38 @@ const DEMO_WALLET_ADDRESS = 'lace_1x9a...v4p2';
 export default function Medico() {
   const [patient, setPatient] = useState('');
   const [patientWalletAddress, setPatientWalletAddress] = useState(DEMO_WALLET_ADDRESS);
-  const [drugCode, setDrugCode] = useState(''); // Ahora inicia vacío para que el médico escriba
+  const [drugCode, setDrugCode] = useState(''); // código seleccionado del catálogo, va al backend
   const [expiryDate, setExpiryDate] = useState('');
 
   const [status, setStatus] = useState<'idle' | 'loading' | 'success'>('idle');
   const [error, setError] = useState('');
   const [cryptoData, setCryptoData] = useState({ shortId: '', nonce: '', commitment: '' });
+
+  // --- Medicine search dropdown (GET /api/medicamentos) ---
+  const [medicamentos, setMedicamentos] = useState<Medicamento[]>([]);
+  const [medSearchQuery, setMedSearchQuery] = useState('');
+  const [showMedDropdown, setShowMedDropdown] = useState(false);
+  const [selectedMedicamento, setSelectedMedicamento] = useState<Medicamento | null>(null);
+
+  useEffect(() => {
+    listarMedicamentos()
+      .then(setMedicamentos)
+      .catch((err) => console.error('Error fetching medicines:', err));
+  }, []);
+
+  const filteredMedicamentos = medSearchQuery.trim()
+    ? medicamentos.filter((med) => {
+        const query = medSearchQuery.toUpperCase();
+        return med.codigo.toUpperCase().startsWith(query) || med.nombre.toUpperCase().includes(query);
+      })
+    : [];
+
+  const handleSelectMedicamento = (med: Medicamento) => {
+    setSelectedMedicamento(med);
+    setDrugCode(med.codigo);
+    setMedSearchQuery(med.codigo);
+    setShowMedDropdown(false);
+  };
   
   const [loadingStep, setLoadingStep] = useState(0);
   const loadingMessages = [
@@ -225,24 +251,63 @@ export default function Medico() {
                       
                       <div className="grid sm:grid-cols-2 gap-4">
                         
-                        {/* INPUT DE TEXTO LIBRE PARA EL MEDICAMENTO */}
-                        <div className="group relative rounded-[1.5rem] bg-zinc-50/50 border border-zinc-200/80 p-4 transition-all duration-300 hover:bg-zinc-50 focus-within:bg-white focus-within:border-indigo-500 focus-within:ring-4 focus-within:ring-indigo-500/10 focus-within:shadow-sm">
-                          <div className="flex items-center gap-4">
-                            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[1rem] bg-white shadow-sm border border-zinc-100 group-focus-within:border-indigo-200 group-focus-within:bg-indigo-50 transition-colors duration-300">
-                              <Pill className="h-5 w-5 text-zinc-400 group-focus-within:text-indigo-600" />
-                            </div>
-                            <div className="flex-1 overflow-hidden">
-                              <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 group-focus-within:text-indigo-600 transition-colors">Drug Name / Code</label>
-                              <input
-                                type="text"
-                                required
-                                value={drugCode}
-                                onChange={(e) => setDrugCode(e.target.value)}
-                                placeholder="e.g., Amoxicillin 500mg"
-                                className="w-full bg-transparent p-0 text-sm font-bold text-zinc-900 focus:outline-none placeholder:text-zinc-300 placeholder:font-medium mt-1"
-                              />
+                        {/* MEDICINE SEARCH DROPDOWN — busca por código o nombre, GET /api/medicamentos */}
+                        <div className="relative">
+                          <div className="group relative rounded-[1.5rem] bg-zinc-50/50 border border-zinc-200/80 p-4 transition-all duration-300 hover:bg-zinc-50 focus-within:bg-white focus-within:border-indigo-500 focus-within:ring-4 focus-within:ring-indigo-500/10 focus-within:shadow-sm">
+                            <div className="flex items-center gap-4">
+                              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[1rem] bg-white shadow-sm border border-zinc-100 group-focus-within:border-indigo-200 group-focus-within:bg-indigo-50 transition-colors duration-300">
+                                {selectedMedicamento ? (
+                                  <Check className="h-5 w-5 text-emerald-500" />
+                                ) : (
+                                  <Search className="h-5 w-5 text-zinc-400 group-focus-within:text-indigo-600" />
+                                )}
+                              </div>
+                              <div className="flex-1 overflow-hidden">
+                                <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 group-focus-within:text-indigo-600 transition-colors">Drug Name / Code</label>
+                                <input
+                                  type="text"
+                                  required
+                                  value={medSearchQuery}
+                                  onChange={(e) => {
+                                    setMedSearchQuery(e.target.value);
+                                    setSelectedMedicamento(null);
+                                    setDrugCode('');
+                                    setShowMedDropdown(true);
+                                  }}
+                                  onFocus={() => setShowMedDropdown(true)}
+                                  onBlur={() => setShowMedDropdown(false)}
+                                  placeholder="Search by code (e.g. IBU) or name"
+                                  className="w-full bg-transparent p-0 text-sm font-bold text-zinc-900 focus:outline-none placeholder:text-zinc-300 placeholder:font-medium mt-1"
+                                />
+                              </div>
                             </div>
                           </div>
+
+                          {showMedDropdown && filteredMedicamentos.length > 0 && (
+                            <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-zinc-200/80 rounded-2xl shadow-xl max-h-56 overflow-y-auto z-20">
+                              {filteredMedicamentos.map((med) => (
+                                <button
+                                  type="button"
+                                  key={med.codigo}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault(); // keep input from blurring before the click registers
+                                    handleSelectMedicamento(med);
+                                  }}
+                                  className="w-full text-left px-4 py-3 hover:bg-indigo-50 transition-colors border-b border-zinc-100 last:border-b-0 first:rounded-t-2xl last:rounded-b-2xl"
+                                >
+                                  <span className="font-mono text-xs font-bold text-indigo-600">{med.codigo}</span>
+                                  {' '}
+                                  <span className="text-zinc-600 text-sm">{med.nombre}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {showMedDropdown && medSearchQuery.trim() && filteredMedicamentos.length === 0 && (
+                            <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-zinc-200/80 rounded-2xl shadow-xl px-4 py-3 text-sm font-medium text-zinc-400 z-20">
+                              No medicines match "{medSearchQuery}"
+                            </div>
+                          )}
                         </div>
 
                         {/* Date Field */}
@@ -353,7 +418,9 @@ export default function Medico() {
                       setStatus('idle');
                       setPatient('');
                       setExpiryDate('');
-                      setDrugCode(''); // Limpiamos el texto al resetear
+                      setDrugCode('');
+                      setMedSearchQuery('');
+                      setSelectedMedicamento(null);
                     }}
                     className="flex items-center gap-2 text-sm font-bold text-zinc-500 hover:text-zinc-900 transition-colors"
                   >
