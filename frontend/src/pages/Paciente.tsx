@@ -316,18 +316,19 @@ export default function Paciente() {
                 <div className="relative">
                   <div className="h-14 w-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 p-[2px] shadow-lg shadow-indigo-500/20">
                     <div className="h-full w-full bg-white rounded-[14px] flex items-center justify-center overflow-hidden">
-                      <span className="text-xl font-black text-transparent bg-clip-text bg-gradient-to-tr from-indigo-600 to-violet-500">
-                        JP
-                      </span>
+                      <FileText className="w-6 h-6 text-indigo-600" />
                     </div>
                   </div>
                   <div className="absolute -bottom-1 -right-1 bg-white rounded-full p-0.5 shadow-sm">
                     <ShieldCheck className="w-4 h-4 text-indigo-600" />
                   </div>
                 </div>
-                <div>
-                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-0.5">Private Wallet</p>
-                  <h1 className="text-2xl font-extrabold text-zinc-900 leading-none">Juan Pérez</h1>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-0.5">Prescription Pad</p>
+                  <h1 className="text-xl font-extrabold text-zinc-900 leading-none">Secure Health Records</h1>
+                  {walletAddress && (
+                    <p className="text-[10px] font-mono text-zinc-400 mt-1 truncate">{walletAddress}</p>
+                  )}
                 </div>
               </div>
 
